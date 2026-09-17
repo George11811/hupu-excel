@@ -396,6 +396,35 @@
     return txt(contentBox(html));
   }
 
+  /**
+   * 视频帖的占位内容。
+   *
+   * 视频帖的 thread.content 基本是空的（`<p></p>` 或一个隐藏 span），真正的视频地址
+   * 和封面在 thread.video / thread.videoCover，或者 thread.format 里的 videoInfo。
+   * 什么都不画的话，正文格就是一片空白，看着像解析失败。
+   */
+  function videoBox(url, cover) {
+    const box = document.createElement('div');
+    box.className = 'hx-video';
+    if (cover) {
+      const im = document.createElement('img');
+      im.className = 'hx-img';
+      im.src = cover;
+      im.dataset.zoom = cover;
+      im.loading = 'lazy';
+      im.referrerPolicy = 'no-referrer';
+      box.appendChild(im);
+    }
+    const a = document.createElement('a');
+    a.className = 'hx-link hx-video-play';
+    a.href = url || location.href;
+    a.target = '_blank';
+    a.rel = 'noreferrer';
+    a.textContent = '▶ 播放视频';
+    box.appendChild(a);
+    return box;
+  }
+
   /* ---------- 3.0 内联数据 window.$$data ---------- */
 
   /*
@@ -709,11 +738,26 @@
     const rep = det.replies || {};
 
     let content = th.content || '';
-    if (!htmlToText(content) && th.format) {
-      try {
-        const f = JSON.parse(th.format);
-        content = (f && (f.htmlV3 || (f.jsonV3 && JSON.stringify(f.jsonV3)))) || content;
-      } catch (e) { /* 忽略 */ }
+    let fmt = null;
+    try { fmt = th.format ? JSON.parse(th.format) : null; } catch (e) { fmt = null; }
+    if (!htmlToText(content) && !/<img/i.test(content) && fmt) {
+      content = (fmt.htmlV3 || (fmt.jsonV3 && JSON.stringify(fmt.jsonV3))) || content;
+    }
+
+    // 视频帖：content 是空的，视频在 thread.video / format.videoInfo 里
+    const videoUrl = String(th.video || (fmt && fmt.videoInfo && fmt.videoInfo.remoteUrl) || '');
+    const videoCover = String(th.videoCover || (fmt && fmt.videoInfo && fmt.videoInfo.coverUrl) || '');
+    const isVideo = !!(th.hasVideo || videoUrl);
+    const opPlain = htmlToText(content);
+    const opNode = contentBox(content);
+    if (isVideo && !/<video|<iframe/i.test(content)) {
+      opNode.appendChild(videoBox(videoUrl, videoCover));
+    } else if (!opPlain && !opNode.querySelector('img')) {
+      // 其它「没有文字正文」的富内容（投票 / 卡片…）：给句说明，别留一片空白
+      const hint = document.createElement('span');
+      hint.className = 'hx-muted';
+      hint.textContent = '（这个帖子没有文字正文，可能是投票 / 卡片之类的富内容；点标题去原生页面看）';
+      opNode.appendChild(hint);
     }
 
     const floors = [];
@@ -722,7 +766,7 @@
       cells: [
         { text: '楼主' },
         { text: (th.author && th.author.puname) || '', href: th.author && th.author.url },
-        { node: contentBox(content), plain: htmlToText(content) },
+        { node: opNode, plain: (isVideo ? '【视频】' : '') + (opPlain || '') },
         { text: fmtNum(th.lights), raw: num(th.lights) },
         { text: fmtTime(th.createdAt) },
         { text: [th.location, th.client].filter(Boolean).join(' · ') }
@@ -1542,6 +1586,10 @@
   .hx-cmp-status.err { color: #c0392b; }
   .hx-cmp-status.ok { color: var(--accent-dark); }
   .hx-quote { border-left: 3px solid #c8c8c8; background: #fafafa; padding: 2px 8px; margin: 3px 0; color: #6b6b6b; }
+  /* 视频帖在正文格里的占位（封面 + 播放链接），免得整格空白 */
+  .hx-video { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
+  .hx-video-play { font-weight: 600; }
+  .hx-muted { color: var(--muted); font-style: italic; }
   .hx-img { display: inline-block; max-width: var(--img-max-w); max-height: var(--img-max-h); margin: 3px 4px 3px 0; border: 1px solid #e0e0e0; background: #fafafa; vertical-align: top; cursor: zoom-in; }
 
   /* 鼠标悬停浮出大图 */
