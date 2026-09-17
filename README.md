@@ -3,7 +3,7 @@
 把 `bbs.hupu.com` 伪装成一个 Excel 工作簿的油猴脚本（Tampermonkey / Violentmonkey / Greasemonkey）。
 
 - 脚本文件：**`hupu-excel.user.js`**
-- 参考实现：[`reference/nga-excel.js`](reference/nga-excel.js)（NGA 优化摸鱼体验的 Excel 模式）、[`reference/nga-codex.user.js`](reference/nga-codex.user.js)（数据读取 / 结构化渲染的思路）、[`reference/hupu-codex.user.js`](reference/hupu-codex.user.js)（虎扑版 Codex 外观；发帖 / 回帖接口就是从它这儿对出来的）
+- 参考实现：[`nga-bbs-script`](https://github.com/kisshang1993/NGA-BBS-Script)（NGA 优化摸鱼体验的 Excel 模式）
 
 ## 截图
 
