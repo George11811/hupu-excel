@@ -93,10 +93,15 @@
     showAccount: true,    // 标题栏右侧的账号区
     showUrl: false,       // 表格里的「路径」列（默认关闭，更清爽）
     freezeHeader: true,   // 冻结列标行 / 行号列
+    fillerRows: 40,       // 内容末尾补的空白行数（像真 Excel 那样下面还有格子）
+    fillerCols: 8,        // 内容右边补的空白列数（列标接着 A、B、C… 排）
     showImages: true,     // 帖子正文里的图片
     imgMaxW: 260,         // 缩略图宽度上限（px）
     imgMaxH: 170,         // 缩略图高度上限（px）
-    imgHoverZoom: true    // 鼠标悬停浮出大图
+    imgHoverZoom: true,   // 鼠标悬停浮出大图
+    zoomMaxW: 640,        // 悬停大图宽度上限（px）
+    zoomMaxH: 480,        // 悬停大图高度上限（px）
+    zoomOpacity: 100      // 悬停大图不透明度（%）
   };
 
   function storeGet(key, fallback) {
@@ -1545,14 +1550,26 @@
     min-width: 90px; min-height: 64px;
     padding: 4px; background: #fff; border: 1px solid #bfbfbf; border-radius: 3px;
     box-shadow: 0 8px 28px rgba(0,0,0,.28); pointer-events: none;
+    opacity: var(--zoom-opacity, 1);
   }
   .hx-zoom-pop.on { display: block; }
-  .hx-zoom-pop img { display: block; max-width: 62vw; max-height: 72vh; background: #fafafa; }
+  /* 尺寸可在设置面板「正文图片」里调；再大也不会超出视口 */
+  .hx-zoom-pop img { display: block; max-width: min(var(--zoom-max-w, 62vw), 92vw); max-height: min(var(--zoom-max-h, 72vh), 88vh); background: #fafafa; }
   .hx-zoom-pop .hx-zoom-cap {
-    display: block; max-width: 62vw; padding: 4px 2px 1px; font-size: 11px; color: #8a8886;
+    display: block; max-width: min(var(--zoom-max-w, 62vw), 92vw); padding: 4px 2px 1px; font-size: 11px; color: #8a8886;
     overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
   }
   #hx-root.hx-nozoom .hx-img { cursor: default; }
+  /* 点击图片：在当前页盖一层看原图（不开新标签、不离开 Excel 页） */
+  .hx-lightbox {
+    position: fixed; inset: 0; z-index: 60; display: none;
+    align-items: center; justify-content: center; flex-direction: column; gap: 8px;
+    background: rgba(20,20,20,.78); cursor: zoom-out;
+  }
+  .hx-lightbox.on { display: flex; }
+  .hx-lightbox img { max-width: 94vw; max-height: 86vh; background: #fff; box-shadow: 0 12px 40px rgba(0,0,0,.5); }
+  .hx-lightbox .hx-lb-cap { color: #dddddd; font-size: 12px; }
+  .hx-lightbox .hx-lb-tip { color: #999999; font-size: 11px; }
   .hx-empty { padding: 14px 12px; color: var(--muted); font-size: 13px; }
   .hx-loading { padding: 24px 16px; color: var(--muted); font-size: 13px; }
   .hx-loading b { color: var(--accent); font-weight: 600; }
@@ -1937,6 +1954,7 @@
    *   state.model 是空的、只能从 0 开始；软导航不会重置 state，所以得在这儿显式区分。
    */
   function paint(model, keepSheet) {
+    closeLightbox();   // 换页 / 重绘时别把图片弹层留在那儿
     const prevSheet = state.model && state.model.sheets[state.sheet] ? state.model.sheets[state.sheet].name : null;
     state.model = model;
     state.sheet = 0;
@@ -1980,6 +1998,9 @@
     if (!R) return;
     R.root.style.setProperty('--img-max-w', clamp(num(CFG.imgMaxW) || 260, 60, 1200) + 'px');
     R.root.style.setProperty('--img-max-h', clamp(num(CFG.imgMaxH) || 170, 40, 900) + 'px');
+    R.root.style.setProperty('--zoom-max-w', clamp(num(CFG.zoomMaxW) || 640, 160, 2400) + 'px');
+    R.root.style.setProperty('--zoom-max-h', clamp(num(CFG.zoomMaxH) || 480, 120, 1600) + 'px');
+    R.root.style.setProperty('--zoom-opacity', String(clamp(num(CFG.zoomOpacity) || 100, 20, 100) / 100));
     R.root.classList.toggle('hx-nozoom', !CFG.imgHoverZoom);
     if (!CFG.imgHoverZoom) hideZoomPop();
   }
@@ -2047,6 +2068,21 @@
     head.appendChild(corner);
     const cols = visibleCols(sheet);
     const tableWidth = cols.reduce((s, c) => s + c.col.width, 0) + 50;
+    // 右边补的空白列；列标接着可见列往后排（A、B、C…）
+    const fillerCols = clamp(num(CFG.fillerCols), 0, 60);
+    const fillerW = 90;
+    const addFillerCells = (tr, line, ri) => {
+      for (let j = 0; j < fillerCols; j++) {
+        const d = el('div', 'hx-cell');
+        d.style.flex = '0 0 ' + fillerW + 'px';
+        d.style.width = fillerW + 'px';
+        d.dataset.r = ri;
+        d.dataset.c = cols.length + j;
+        d._cell = { text: '', href: '' };
+        line.push(d);
+        tr.appendChild(d);
+      }
+    };
     cols.forEach((c, i) => {
       const d = el('div', 'hx-coll');
       d.textContent = colName(i);
@@ -2055,6 +2091,14 @@
       head.appendChild(d);
       state.colHeads.push(d);
     });
+    for (let j = 0; j < fillerCols; j++) {
+      const d = el('div', 'hx-coll');
+      d.textContent = colName(cols.length + j);
+      d.style.flex = '0 0 ' + fillerW + 'px';
+      d.style.width = fillerW + 'px';
+      head.appendChild(d);
+      state.colHeads.push(d);
+    }
     table.appendChild(head);
 
     // 数据行（行既可以是单元格数组，也可以是 {cells:[...]} 包装；
@@ -2080,8 +2124,10 @@
           gd.appendChild(note);
         }
         gtr.appendChild(gd);
+        const gline = [gd];
+        addFillerCells(gtr, gline, ri);
         table.appendChild(gtr);
-        state.cells.push([gd]);
+        state.cells.push(gline);
         return;
       }
 
@@ -2111,22 +2157,53 @@
         } else {
           d.textContent = data.text == null ? '' : String(data.text);
         }
-        d.title = data.plain || (d.textContent || '').slice(0, 400);
+        // 正文格 / 含图格不挂 title：原生 tooltip 会浮在图上把图挡住，而且这些内容
+        // 本来就完整显示在格子里。其它列（标题 / 作者…）保留悬停看全文的提示。
+        const hasImg = !!(data.node && data.node.querySelector && data.node.querySelector('img'));
+        if (!col.content && !hasImg) {
+          d.title = data.plain || (d.textContent || '').slice(0, 400);
+        }
         d._cell = { text: (data.plain || d.textContent || '').replace(/\s+/g, ' ').trim(), href: data.href || '' };
         d.dataset.r = ri;
         d.dataset.c = ci;
         line.push(d);
         tr.appendChild(d);
       });
+      addFillerCells(tr, line, ri);
       state.cells.push(line);
       table.appendChild(tr);
     });
+
+    // 末尾补空白行：真 Excel 里内容下面永远还有格子，看着更像工作表。
+    // 这些行也进 state.cells，所以可以点选、可以用方向键走下去。
+    const filler = clamp(num(CFG.fillerRows), 0, 500);
+    for (let k = 0; k < filler; k++) {
+      const ri = sheet.rows.length + k;
+      const tr = el('div', 'hx-tr hx-filler');
+      const rh = el('div', 'hx-rowhead');
+      rh.textContent = String(ri + 1);
+      tr.appendChild(rh);
+      const line = [];
+      cols.forEach((c, ci) => {
+        const d = el('div', 'hx-cell');
+        d.style.flex = '0 0 ' + c.col.width + 'px';
+        d.style.width = c.col.width + 'px';
+        d.dataset.r = ri;
+        d.dataset.c = ci;
+        d._cell = { text: '', href: '' };
+        line.push(d);
+        tr.appendChild(d);
+      });
+      addFillerCells(tr, line, ri);
+      state.cells.push(line);
+      table.appendChild(tr);
+    }
 
     renderTabs();
     // 首行如果是分类段标题，就把光标放到第一条数据上
     let firstData = 0;
     for (let i = 0; i < state.cells.length; i++) {
-      if (!(state.cells[i].length === 1 && state.cells[i][0].classList.contains('hx-group-cell'))) { firstData = i; break; }
+      if (!(state.cells[i][0] && state.cells[i][0].classList.contains('hx-group-cell'))) { firstData = i; break; }
     }
     setSel(firstData, 0, false);
     showTrail();
@@ -2268,6 +2345,26 @@
       go(a.href);
     }, true);
 
+    // 点缩略图 / 【图片】链接：在当前页弹层里看原图，不开新标签。
+    // 放在软导航之后、靠 defaultPrevented 让已经接管过的站内链接优先。
+    root.addEventListener('click', e => {
+      if (!CFG.enabled || isPeek()) return;
+      if (e.defaultPrevented) return;
+      if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+      const t = e.target;
+      let src = '';
+      if (t && t.classList && t.classList.contains('hx-img')) {
+        src = t.dataset.zoom || t.src || '';
+      } else {
+        const a = t && t.closest && t.closest('.hx-link[data-zoom]');
+        if (a) src = a.dataset.zoom || a.getAttribute('href') || '';
+      }
+      if (!src) return;
+      e.preventDefault();
+      e.stopPropagation();
+      openLightbox(src);
+    }, true);
+
     // 功能区的「发新帖 / 回复」按钮（见 8.6 节）
     root.addEventListener('click', e => {
       const act = e.target && e.target.closest && e.target.closest('[data-act]');
@@ -2320,6 +2417,53 @@
     if (!R) return;
     const pop = one('.hx-zoom-pop', R.root);
     if (pop) pop.classList.remove('on');
+  }
+
+  /* ---- 点击图片：在当前页弹层里看原图 ----
+   *
+   * 以前「显示正文图片」关掉时，图会渲染成 <a target="_blank">【图片】</a>，
+   * 点一下开新标签看原图；缩略图如果正好被站点的 <a> 包着同理。现在都改成
+   * 在本页盖一层显示（Esc / 点任意处关闭），既不开新标签也不会离开 Excel 页。
+   */
+
+  function lightboxEl() {
+    if (!R) return null;
+    let box = one('.hx-lightbox', R.root);
+    if (!box) {
+      box = el('div', 'hx-lightbox');
+      box.innerHTML = '<img alt="" referrerpolicy="no-referrer"><div class="hx-lb-cap"></div>' +
+        '<div class="hx-lb-tip">点击任意处关闭 · Esc</div>';
+      box.addEventListener('click', closeLightbox);
+      R.root.appendChild(box);
+    }
+    return box;
+  }
+
+  function lightboxOpen() {
+    const box = R && one('.hx-lightbox', R.root);
+    return !!(box && box.classList.contains('on'));
+  }
+
+  function closeLightbox() {
+    const box = R && one('.hx-lightbox', R.root);
+    if (box) box.classList.remove('on');
+  }
+
+  function openLightbox(src) {
+    if (!src) return;
+    const box = lightboxEl();
+    if (!box) return;
+    const img = box.querySelector('img');
+    const cap = box.querySelector('.hx-lb-cap');
+    if (img.dataset.src !== src) {
+      img.dataset.src = src;
+      cap.textContent = '载入中…';
+      img.onload = () => { cap.textContent = img.naturalWidth + ' × ' + img.naturalHeight; };
+      img.onerror = () => { cap.textContent = '图片加载失败'; };
+      img.src = src;
+    }
+    box.classList.add('on');
+    hideZoomPop();
   }
 
   function bindZoom() {
@@ -2379,6 +2523,8 @@
         if (!CFG.enabled) return;
         // 设置面板开着时，Esc 先关面板
         if (dlg) { e.preventDefault(); e.stopPropagation(); closeSettings(); return; }
+        // 图片弹层开着时，Esc 先关弹层
+        if (lightboxOpen()) { e.preventDefault(); e.stopPropagation(); closeLightbox(); return; }
         // 正在搜索框里打字时，Esc 先清空输入框，不当老板键用
         if (R && e.target === R.search && R.search.value) {
           R.search.value = '';
@@ -2482,6 +2628,16 @@
       desc: '滚动表格时，列标（A、B、C…）与行号保持可见'
     },
     {
+      g: '视图', key: 'fillerRows', type: 'range', min: 0, max: 200, step: 10, unit: ' 行', rerender: true,
+      title: '空白行填充',
+      desc: '内容下面补几行空白格，看起来更像真的 Excel 工作表；0 = 不补（松手后重建表格）'
+    },
+    {
+      g: '视图', key: 'fillerCols', type: 'range', min: 0, max: 40, step: 1, unit: ' 列', rerender: true,
+      title: '空白列填充',
+      desc: '内容右边补几列空白格，列标接着 A、B、C… 往后排；0 = 不补'
+    },
+    {
       g: '正文图片', key: 'showImages', type: 'bool', title: '显示正文图片',
       desc: '关掉后帖子里的图片会折叠成「【图片】」链接，上班摸鱼更低调'
     },
@@ -2498,6 +2654,21 @@
     {
       g: '正文图片', key: 'imgHoverZoom', type: 'bool', title: '鼠标悬停浮出大图',
       desc: '鼠标移到缩略图上时在旁边浮出原图；原图地址会自动去掉图床的缩放参数'
+    },
+    {
+      g: '正文图片', key: 'zoomMaxW', type: 'range', min: 200, max: 1600, step: 20, unit: 'px',
+      title: '悬停大图宽度上限',
+      desc: '悬停浮出的原图最大宽度；调小一点不挡视线（实际不会超过窗口宽度的 92%）'
+    },
+    {
+      g: '正文图片', key: 'zoomMaxH', type: 'range', min: 160, max: 1200, step: 20, unit: 'px',
+      title: '悬停大图高度上限',
+      desc: '悬停浮出的原图最大高度（实际不会超过窗口高度的 88%）'
+    },
+    {
+      g: '正文图片', key: 'zoomOpacity', type: 'range', min: 20, max: 100, step: 5, unit: '%',
+      title: '悬停大图不透明度',
+      desc: '整块大图（含白底和尺寸说明行）的不透明度；想更透、更不挡后面的表格就往小调，100% 是完全不透明'
     }
   ];
 
@@ -2675,7 +2846,11 @@
           applyTweaks();
         };
         input.addEventListener('input', refresh);
-        input.addEventListener('change', () => { refresh(); saveCfg(); });
+        input.addEventListener('change', () => {
+          refresh();
+          saveCfg();
+          if (spec.rerender) apply();   // 需要重建表格的设置（比如空白行数）
+        });
         return;
       }
 
