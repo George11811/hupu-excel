@@ -45,6 +45,11 @@
  *
  *   4. 配置
  *      - 全部配置项都在右上角 ⚙ 打开的「Excel 选项」面板里（不注册油猴菜单项）。
+ *
+ *   5. 发帖 / 回帖
+ *      - 功能区「帖子」组：发新帖 / 回复。走站点自己的接口
+ *        （POST /pcmapi/pc/bbs/v1/createThread、/createReply），凭登录 cookie 认证，
+ *        选中某层再点回复就是楼中楼。详见第 8.6 节。
  * ──────────────────────────────────────────────────────────────────────────
  */
 
@@ -538,6 +543,13 @@
       crumbs: crumbList.map(c => c.title),
       crumbList: crumbList,
       sheetName: forum,
+      // 发新帖要用：版面本身的 topicId / cateId / fid 都在 topic 对象里
+      board: (tp.topic && tp.topic.topicId) ? {
+        topicId: String(tp.topic.topicId || ''),
+        cateId: String(tp.topic.cateId || ''),
+        fid: String(tp.topic.fid || ''),
+        name: String(tp.topic.name || forum || '')
+      } : null,
       pager: {
         current: num(th.current) || r.page || 1,
         total: num(th.total) || 1,
@@ -609,6 +621,7 @@
       crumbs: crumbs(),
       crumbList: crumbList(),
       sheetName: forum,
+      board: null,   // DOM 兜底拿不到 fid/topicId，发帖走原生页面
       pager: {
         current: current,
         total: total,
@@ -699,7 +712,7 @@
     }
 
     const floors = [];
-    // 楼主
+    // 楼主（meta 供「回复」时引用）
     floors.push({
       cells: [
         { text: '楼主' },
@@ -708,7 +721,13 @@
         { text: fmtNum(th.lights), raw: num(th.lights) },
         { text: fmtTime(th.createdAt) },
         { text: [th.location, th.client].filter(Boolean).join(' · ') }
-      ]
+      ],
+      meta: {
+        pid: String(th.pid || ''),
+        floor: '楼主',
+        author: (th.author && th.author.puname) || '',
+        contentHtml: content
+      }
     });
 
     const offset = Math.max(0, (num(rep.current) - 1) * num(rep.size || 20));
@@ -721,7 +740,14 @@
           { text: fmtNum(p.count), raw: num(p.count) },
           { text: fmtTime(p.createdAt) },
           { text: [p.location, p.client].filter(Boolean).join(' · ') }
-        ]
+        ],
+        // 楼中楼要 pid + 被引用那层的原文
+        meta: {
+          pid: String(p.pid || ''),
+          floor: offset + i + 1,
+          author: (p.author && p.author.puname) || '',
+          contentHtml: String(p.content || '')
+        }
       });
     });
 
@@ -768,6 +794,14 @@
       crumbs: (det.breadCrumb || []).map(b => b.title).filter(Boolean),
       crumbList: (det.breadCrumb || []).filter(b => b.title).map(b => ({ title: b.title, url: abs(b.url) })),
       sheetName: '全部楼层',
+      // 回帖要用：tid + fid/topicId（都在 __NEXT_DATA__.detail 里）
+      tid: String(th.tid || r.tid || ''),
+      board: {
+        topicId: String(th.topicId || (th.topic && th.topic.topicId) || ''),
+        cateId: String((th.topic && th.topic.cateId) || ''),
+        fid: String(th.fid || (th.topic && th.topic.fid) || ''),
+        name: String((th.topic && th.topic.name) || '')
+      },
       pager: {
         current: num(rep.current) || r.page || 1,
         total: num(rep.total) || 1,
@@ -796,7 +830,8 @@
         { text: '' },
         { text: txt(timeNode).replace('发布于', '') },
         { text: txt(locNode).replace('发布于', '') }
-      ]
+      ],
+      meta: { pid: '', floor: '楼主', author: txt(nameNode), contentHtml: contentNode ? contentNode.innerHTML : '' }
     }];
 
     $$$('.post-reply-list-wrapper').forEach((wrap, i) => {
@@ -813,7 +848,8 @@
           { text: txt(light).replace(/[^\d]/g, '') },
           { text: txt(t) },
           { text: txt(lo).replace('发布于', '') }
-        ]
+        ],
+        meta: { pid: '', floor: i + 1, author: txt(n), contentHtml: c ? c.innerHTML : '' }
       });
     });
 
@@ -828,6 +864,8 @@
       crumbs: crumbs(),
       crumbList: crumbList(),
       sheetName: '全部楼层',
+      tid: String(r.tid || ''),
+      board: null,   // DOM 兜底拿不到 fid/topicId
       pager: { current: r.page || 1, total: total, href: n => n <= 1 ? '/' + r.tid + '.html' : '/' + r.tid + '-' + n + '.html' },
       sheets: [{
         name: '全部楼层',
@@ -1487,6 +1525,17 @@
   .hx-dlg-btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
   .hx-dlg-btn.primary:hover { filter: brightness(1.08); }
   .hx-dlg-tip { margin-left: auto; font-size: 11px; color: #8a8886; }
+  /* 发帖 / 回帖弹框（复用 .hx-dlg 的外壳，正文区单独排） */
+  .hx-cmp { width: 660px; height: auto; max-height: calc(100% - 120px); }
+  .hx-cmp-body { flex: 1 1 auto; display: flex; flex-direction: column; gap: 8px; padding: 12px 16px; min-height: 0; overflow: auto; }
+  .hx-cmp-quote { flex: 0 0 auto; padding: 6px 9px; background: #f3f2f1; border-left: 3px solid var(--accent); color: #555; }
+  .hx-cmp-unquote { margin-left: 10px; color: var(--link); text-decoration: underline; cursor: default; }
+  .hx-cmp-title { flex: 0 0 auto; height: 30px; padding: 0 8px; border: 1px solid var(--border-strong); border-radius: 2px; font: inherit; font-size: 13px; font-weight: 600; color: #201f1e; outline: none; }
+  .hx-cmp-text { flex: 1 1 auto; min-height: 210px; resize: vertical; padding: 8px; border: 1px solid var(--border-strong); border-radius: 2px; font: inherit; font-size: 13px; line-height: 1.7; color: #201f1e; outline: none; }
+  .hx-cmp-title:focus, .hx-cmp-text:focus { border-color: var(--accent); }
+  .hx-cmp-status { flex: 0 0 auto; min-height: 18px; font-size: 12px; color: #8a8886; }
+  .hx-cmp-status.err { color: #c0392b; }
+  .hx-cmp-status.ok { color: var(--accent-dark); }
   .hx-quote { border-left: 3px solid #c8c8c8; background: #fafafa; padding: 2px 8px; margin: 3px 0; color: #6b6b6b; }
   .hx-img { display: inline-block; max-width: var(--img-max-w); max-height: var(--img-max-h); margin: 3px 4px 3px 0; border: 1px solid #e0e0e0; background: #fafafa; vertical-align: top; cursor: zoom-in; }
 
@@ -1678,7 +1727,8 @@
     viewLayout: SVG_OPEN + '<rect x="3" y="4.5" width="14" height="11"/><path d="M3 8h14M10 8v7.5"/></svg>',
     viewPage: SVG_OPEN + '<rect x="4.5" y="3" width="11" height="14"/><path d="M7 7h6M7 10h6M7 13h3"/></svg>',
     gear: SVG_OPEN + '<circle cx="10" cy="10" r="3"/><path d="M10 2v2.4M10 15.6V18M2 10h2.4M15.6 10H18M4.4 4.4l1.7 1.7M13.9 13.9l1.7 1.7M15.6 4.4l-1.7 1.7M6.1 13.9l-1.7 1.7"/></svg>',
-    home: SVG_OPEN + '<path d="M3 9.4 10 3.2l7 6.2"/><path d="M5.2 8.6V16.8h9.6V8.6"/><path d="M8.3 16.8v-4.2h3.4v4.2"/></svg>'
+    home: SVG_OPEN + '<path d="M3 9.4 10 3.2l7 6.2"/><path d="M5.2 8.6V16.8h9.6V8.6"/><path d="M8.3 16.8v-4.2h3.4v4.2"/></svg>',
+    pen: SVG_OPEN + '<path d="M4 16.5h3l8.6-8.6-3-3L4 13.5z"/><path d="m13.1 4.4 2.5 2.5"/></svg>'
   };
 
   const glyph = (t, cls, extra) =>
@@ -1748,7 +1798,12 @@
     { title: '数字', html: numberGroup() },
     { title: '样式', html: styleGroup() },
     { title: '单元格', html: gbtn('insertCell', '插入') + gbtn('deleteCell', '删除') + gbtn('formatCell', '格式') },
-    { title: '编辑', html: gbtn('sum', '求和') + gbtn('fillDown', '填充') + gbtn('clear', '清除') + gbtn('sort', '排序') + gbtn('find', '查找') }
+    { title: '编辑', html: gbtn('sum', '求和') + gbtn('fillDown', '填充') + gbtn('clear', '清除') + gbtn('sort', '排序') + gbtn('find', '查找') },
+    // 真正能用的两个按钮：发新帖 / 回复本帖（见 8.6 节）
+    { title: '帖子', html:
+      '<div class="hx-btn" data-act="newthread" title="发新帖（当前版面）"><div class="i">' + ICONS.pen + '</div><div class="t">发新帖</div></div>' +
+      '<div class="hx-btn" data-act="reply" title="回复本帖（选中某层则引用该层）"><div class="i">' + ICONS.comment + '</div><div class="t">回复</div></div>'
+    }
   ];
 
   const TAB_NAMES = ['文件', '开始', '插入', '页面布局', '公式', '数据', '审阅', '视图', '安全', '开发工具', '特色功能'];
@@ -2213,6 +2268,16 @@
       go(a.href);
     }, true);
 
+    // 功能区的「发新帖 / 回复」按钮（见 8.6 节）
+    root.addEventListener('click', e => {
+      const act = e.target && e.target.closest && e.target.closest('[data-act]');
+      if (!act || !root.contains(act)) return;
+      const kind = act.dataset.act;
+      if (kind !== 'newthread' && kind !== 'reply') return;
+      e.stopPropagation();
+      openCompose(kind === 'newthread' ? 'thread' : 'reply');
+    }, true);
+
     // 屏蔽事件冒泡到虎扑自己的全局监听器（原生 DOM 只是藏起来，监听器都还在）
     ['click', 'mousedown', 'mouseup', 'dblclick', 'contextmenu', 'keydown', 'keyup', 'wheel', 'touchstart']
       .forEach(type => root.addEventListener(type, e => e.stopPropagation()));
@@ -2670,6 +2735,331 @@
     obs.observe(box, { childList: true, subtree: true, characterData: true });
   }
 
+
+  /* ============================== 8.6 发帖 / 回帖 ==============================
+   *
+   * 接口是从站点自己的编辑器 JS（动态 chunk reply-compact-editor）里挖出来的：
+   *
+   *   POST /pcmapi/pc/bbs/v1/createThread   发新帖
+   *   POST /pcmapi/pc/bbs/v1/createReply    回帖 / 楼中楼
+   *   Content-Type: application/json，credentials: include（凭 session cookie，没有额外 token）
+   *
+   * body 字段（对照站点源码里的那个 post 对象）：
+   *   发帖：fid / topicId / cateId / title / content / nonce / shumeiId / video*
+   *   回帖：fid / topicId / content / tid / quoteId / shumeiId / video*
+   *         楼中楼再多带 pid + data.atc_content（被引用那一层的原文）
+   *
+   * shumeiId 是数美反欺诈设备号（页面会加载 smDeviceSdk2.js 挂 window.SMSdk）：
+   * 不带它直接 POST 会被风控拦成 AS021999「内容数据出现异常」，所以能拿就拿、拿不到也别编。
+   *
+   * 注意：成功路径没法在无账号环境实测，所以弹框里留了「去原生页面」这条退路。
+   * ======================================================================= */
+
+  let composeKind = 'reply';    // 'thread' | 'reply'
+  let composeTarget = null;     // 楼中楼引用：{ pid, floor, author, contentHtml }
+
+  /** 在「当前展示的那份文档」上跑一段读取（软导航之后 document 是旧的那份） */
+  function withViewDoc(fn) {
+    const prevDoc = DOC, prevData = PAGE_DATA;
+    DOC = viewDoc;
+    PAGE_DATA = undefined;
+    try { return fn(); } finally { DOC = prevDoc; PAGE_DATA = prevData; }
+  }
+
+  /** 「有一个 true 就算登录；全是 false 才算未登录；一个布尔信号都没有就不知道」 */
+  function pickLogin(signals) {
+    let saw = false;
+    for (let i = 0; i < signals.length; i++) {
+      if (typeof signals[i] === 'boolean') { saw = true; if (signals[i]) return true; }
+    }
+    return saw ? false : null;
+  }
+
+  /**
+   * 登录态三态：true / false / **null（这个页面没给可用信号）**。
+   * 版块页看 $$data 的 isLogin；帖子页没有 isLogin，用 pageProps.euid /
+   * detail.user.puid 两个间接信号 —— 和站点自己的判定一致。
+   */
+  function loginState() {
+    return withViewDoc(function () {
+      const data = readPageData();
+      if (data) {
+        const v = pickLogin([
+          data.isLogin,
+          data.pageData && data.pageData.isLogin,
+          data.topic && data.topic.isLogin
+        ]);
+        if (v !== null) return v;
+      }
+      const nd = readNextData();
+      const pp = nd && nd.props && nd.props.pageProps;
+      if (pp) {
+        const signals = [];
+        if (typeof pp.euid === 'string') signals.push(pp.euid !== '');
+        const puid = pp.detail && pp.detail.user && pp.detail.user.puid;
+        if (puid != null && String(puid) !== '') signals.push(String(puid) !== '0');
+        const v = pickLogin(signals);
+        if (v !== null) return v;
+      }
+      return null;
+    });
+  }
+
+  /** 数美反欺诈设备号（拿不到就空着） */
+  function currentShumeiId() {
+    try {
+      const s = window.SMSdk;
+      if (s && typeof s.getDeviceId === 'function') {
+        const v = s.getDeviceId();
+        return v == null ? '' : String(v);
+      }
+    } catch (e) { /* SDK 没加载也不影响 */ }
+    return '';
+  }
+
+  /** 极简 markdown → 站内编辑器产出的那种 HTML（够接口用） */
+  function mdToHtml(src) {
+    const lines = esc(src).split('\n');
+    const out = [];
+    let inList = false;
+    const inline = function (s) {
+      return s
+        .replace(/[`]([^`]+)[`]/g, '<code>$1</code>')
+        .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+        .replace(/(^|[^*])\*([^*]+)\*/g, '$1<em>$2</em>')
+        .replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+    };
+    lines.forEach(function (raw) {
+      const line = raw.replace(/\s+$/, '');
+      const li = line.match(/^\s*[-*]\s+(.*)$/);
+      if (li) {
+        if (!inList) { out.push('<ul>'); inList = true; }
+        out.push('<li>' + inline(li[1]) + '</li>');
+        return;
+      }
+      if (inList) { out.push('</ul>'); inList = false; }
+      if (/^&gt;\s?/.test(line)) { out.push('<blockquote>' + inline(line.replace(/^&gt;\s?/, '')) + '</blockquote>'); return; }
+      if (!line) return;
+      out.push('<p>' + inline(line) + '</p>');
+    });
+    if (inList) out.push('</ul>');
+    return out.join('\n');
+  }
+
+  /** 站点自己的成功判定：code 200 / "200" / 1 都算成功 */
+  function apiOk(res) {
+    const c = res && res.code;
+    return c === 200 || c === 1 || c === '200' || (res && res.status === 200);
+  }
+
+  function apiErrorText(res) {
+    const msg = (res && (res.msg || res.message)) || '';
+    if (msg) return msg;
+    const code = res && res.code;
+    if (code === 401 || code === 403) return '需要登录（或登录已过期）';
+    if (code === 4005 || code === 400) return '内容不合法或为空';
+    return '发送失败（code ' + code + '）';
+  }
+
+  async function postJson(url, body) {
+    const resp = await fetch(url, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    return resp.json().catch(function () { return {}; });
+  }
+
+  /** 当前页面的版面信息（发帖要用）；拿不到就 null */
+  function composeBoard() {
+    const m = state.model;
+    if (m && m.board && m.board.topicId) return m.board;
+    return null;
+  }
+
+  /** 当前选中的楼层（回帖默认引用它，做成楼中楼） */
+  function selectedFloorTarget() {
+    const m = state.model;
+    const sheet = m && m.sheets[state.sheet];
+    if (!sheet || !sheet.rows) return null;
+    const row = sheet.rows[state.sel.r];
+    const meta = row && row.meta;
+    if (!meta || !meta.pid) return null;
+    return meta;
+  }
+
+  function buildThreadBody(board, title, html) {
+    return {
+      fid: String(board.fid || ''),
+      topicId: String(board.topicId || ''),
+      cateId: String(board.cateId || ''),
+      title: String(title || '').trim(),
+      content: String(html || ''),
+      nonce: '',
+      shumeiId: currentShumeiId(),
+      videoCover: '', videoUrl: '', videoSource: '', videoPreview: ''
+    };
+  }
+
+  function buildReplyBody(model, html) {
+    const board = (model && model.board) || {};
+    const base = {
+      fid: String(board.fid || ''),
+      topicId: String(board.topicId || ''),
+      content: String(html || ''),
+      videoCover: '', videoUrl: '', videoSource: '', videoPreview: '',
+      shumeiId: currentShumeiId(),
+      tid: String((model && model.tid) || ''),
+      quoteId: new URLSearchParams(location.search).get('quoteId') || ''
+    };
+    if (!composeTarget || !composeTarget.pid) return base;
+    // 楼中楼：带 pid，并把被引用那一层的原文放进 data.atc_content
+    return Object.assign({}, base, {
+      pid: String(composeTarget.pid),
+      data: { atc_content: String(composeTarget.contentHtml || html) }
+    });
+  }
+
+  function openCompose(kind) {
+    if (!CFG.enabled || isPeek()) return;
+    const model = state.model;
+    if (!model) return;
+
+    if (loginState() === false) {
+      toast('需要登录才能' + (kind === 'thread' ? '发帖' : '回帖'));
+      return;
+    }
+
+    if (kind === 'thread') {
+      const board = composeBoard();
+      if (!board) { toast('这个页面没有版面信息，去版面页发新帖'); return; }
+      composeKind = 'thread';
+      composeTarget = null;
+    } else {
+      if (!model.tid) { toast('只有在帖子页才能回帖'); return; }
+      composeKind = 'reply';
+      composeTarget = selectedFloorTarget();
+    }
+    showCompose();
+  }
+
+  function showCompose() {
+    closeSettings();
+    const model = state.model;
+    const board = composeBoard() || {};
+    const isThread = composeKind === 'thread';
+    const nativeUrl = isThread
+      ? (board.topicId ? 'https://bbs.hupu.com/post/' + board.topicId : location.href)
+      : location.href;
+
+    const head = isThread
+      ? '发新帖 · ' + esc(board.name || board.topicId || '')
+      : '回复 · ' + esc((model && model.title) || '');
+
+    const quote = (!isThread && composeTarget)
+      ? '<div class="hx-cmp-quote">引用 <b>@' + esc(composeTarget.author || '') + '</b>（' +
+        esc(String(composeTarget.floor || '')) + ' 楼）' +
+        '<span class="hx-cmp-unquote" data-act="unquote">取消引用</span></div>'
+      : '';
+
+    dlg = el('div', 'hx-dlg-wrap');
+    dlg._compose = true;
+    dlg.innerHTML =
+      '<div class="hx-dlg-mask"></div>' +
+      '<div class="hx-dlg hx-cmp" role="dialog">' +
+        '<div class="hx-dlg-title"><span>' + head + '</span><i class="hx-dlg-x" data-act="close">✕</i></div>' +
+        '<div class="hx-cmp-body">' +
+          quote +
+          (isThread
+            ? '<input class="hx-cmp-title" data-cmp="title" type="text" maxlength="60" placeholder="标题（必填，最多 60 字）" spellcheck="false">'
+            : '') +
+          '<textarea class="hx-cmp-text" data-cmp="content" placeholder="正文…支持 **加粗**、[`代码`]、> 引用、- 列表、[链接](url)"></textarea>' +
+          '<div class="hx-cmp-status" data-cmp="status"></div>' +
+        '</div>' +
+        '<div class="hx-dlg-foot">' +
+          '<a class="hx-dlg-btn" href="' + esc(nativeUrl) + '" target="_blank" rel="noreferrer">' +
+            (isThread ? '去原生页面发帖' : '去原生页面回复') + '</a>' +
+          '<span class="hx-dlg-tip">Ctrl+Enter 快速' + (isThread ? '发布' : '发送') + '</span>' +
+          '<button class="hx-dlg-btn primary" data-act="submit">' + (isThread ? '发布' : '发送') + '</button>' +
+        '</div>' +
+      '</div>';
+    R.root.appendChild(dlg);
+    bindCompose();
+
+    const focusEl = dlg.querySelector('[data-cmp="title"]') || dlg.querySelector('[data-cmp="content"]');
+    if (focusEl) focusEl.focus();
+  }
+
+  function composeStatus(msg, kind) {
+    if (!dlg) return;
+    const s = dlg.querySelector('[data-cmp="status"]');
+    if (s) { s.textContent = msg || ''; s.className = 'hx-cmp-status' + (kind ? ' ' + kind : ''); }
+  }
+
+  function bindCompose() {
+    const box = dlg;
+    if (!box) return;
+    $$$('[data-act="close"]', box).forEach(b => b.addEventListener('click', closeSettings));
+    const mask = one('.hx-dlg-mask', box);
+    if (mask) mask.addEventListener('click', closeSettings);
+    const submit = one('[data-act="submit"]', box);
+    if (submit) submit.addEventListener('click', function () { submitCompose(); });
+    const unquote = one('[data-act="unquote"]', box);
+    if (unquote) unquote.addEventListener('click', function () {
+      composeTarget = null;
+      const q = one('.hx-cmp-quote', box);
+      if (q) q.remove();
+    });
+    box.addEventListener('keydown', function (e) {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); submitCompose(); }
+    });
+  }
+
+  async function submitCompose() {
+    const box = dlg;
+    if (!box) return;
+    const isThread = composeKind === 'thread';
+    const titleEl = box.querySelector('[data-cmp="title"]');
+    const textEl = box.querySelector('[data-cmp="content"]');
+    const btn = one('[data-act="submit"]', box);
+    const verb = isThread ? '发布' : '发送';
+
+    const title = titleEl ? titleEl.value.trim() : '';
+    const raw = textEl ? textEl.value.trim() : '';
+    if (isThread && !title) { composeStatus('标题不能为空', 'err'); if (titleEl) titleEl.focus(); return; }
+    if (!raw) { composeStatus('正文不能为空', 'err'); if (textEl) textEl.focus(); return; }
+
+    const html = mdToHtml(raw);
+    if (!html) { composeStatus('正文不能为空', 'err'); return; }
+
+    const oldLabel = btn ? btn.innerHTML : '';
+    if (btn) { btn.disabled = true; btn.innerHTML = verb + '中…'; }
+    composeStatus('正在' + verb + '…');
+
+    try {
+      const res = await postJson(
+        isThread ? '/pcmapi/pc/bbs/v1/createThread' : '/pcmapi/pc/bbs/v1/createReply',
+        isThread ? buildThreadBody(composeBoard() || {}, title, html) : buildReplyBody(state.model, html)
+      );
+      if (!apiOk(res)) { composeStatus(apiErrorText(res), 'err'); return; }
+      composeStatus(verb + '成功', 'ok');
+      toast(isThread ? '发布成功' : '回复成功 · 刷新可见');
+      const url = isThread && res.data && (res.data.url || (res.data.jumpDTO && res.data.jumpDTO.url));
+      closeSettings();
+      // 软导航刷新：把新帖 / 新楼层显示出来（不换文档、不闪原生页面）
+      if (url) softNav(url);
+      else softNav(location.href, { push: false, force: true });
+    } catch (err) {
+      composeStatus(verb + '失败', 'err');
+      toast('失败：' + (err && err.message ? err.message : err));
+    } finally {
+      // 失败（含接口回错 code）要把按钮恢复可用；成功时弹框已经关了，跳过
+      if (btn && box.contains(btn)) { btn.disabled = false; btn.innerHTML = oldLabel; }
+    }
+  }
+
   /* ============================== 9. 开关 / 标题 / 图标 ============================== */
 
   let wantTitle = '';
@@ -2849,7 +3239,7 @@
 
     let target;
     try { target = new URL(url, location.href).href; } catch (e) { location.href = url; return; }
-    if (target === viewUrl) return;   // 已经展示的就是这页，别多压一条历史
+    if (target === viewUrl && !opts.force) return;   // 已经展示的就是这页，别多压一条历史
     if (opts.push !== false) {
       try { history.pushState(null, '', target); } catch (e) { location.href = target; return; }
     }
