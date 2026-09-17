@@ -41,7 +41,8 @@
  *
  *   3. 逃生
  *      - Alt+E 开关整个 Excel 模式（写进 GM 存储）。
- *      - Esc 立即切回原页面（不写存储），再按一次回来 —— 老板键。
+ *      - Esc Esc：连按两下切到「裸网格」—— 藏掉版面内容、只留空白表格（老板键）。
+ *      - Alt+反引号：切回原页面（不写存储），再按一次回来。
  *
  *   4. 配置
  *      - 全部配置项都在右上角 ⚙ 打开的「Excel 选项」面板里（不注册油猴菜单项）。
@@ -1309,6 +1310,8 @@
     min-width: 0; max-width: none; background-repeat: no-repeat;
   }
   #hx-root svg { display: block; width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.2; stroke-linecap: round; stroke-linejoin: round; }
+  /* 裸网格模式（Esc Esc）：只留外壳和空白网格，账号区这类身份信息也一起藏掉 */
+  #hx-root.hx-blank .hx-acct { display: none !important; }
   #hx-root a { color: inherit; }
   #hx-root img { max-width: none; }
   #hx-root input { color: inherit; }
@@ -2017,10 +2020,11 @@
         if (model.sheets[i].name === model.sheetName) { state.sheet = i; break; }
       }
     }
-    R.root.className = rootClass();
+    R.root.className = rootClass() + (blankMode ? ' hx-blank' : '');
+    R.search.placeholder = blankMode ? '搜索' : '搜索（在虎扑站内搜索）';
     applyTweaks();
 
-    const book = CFG.book || model.title || '工作簿1';
+    const book = blankMode ? (CFG.book || '工作簿1') : (CFG.book || model.title || '工作簿1');
     wantTitle = book;
     R.book.textContent = book;
 
@@ -2062,6 +2066,7 @@
   function showTrail() {
     const model = state.model;
     if (!model || !R) return;
+    if (blankMode) { R.formula.innerHTML = ''; return; }   // 裸网格：连面包屑都不留
     const list = (model.crumbList || []).slice();
     if (!list.length && model.crumbs) {
       model.crumbs.forEach(t => list.push({ title: t, url: '' }));
@@ -2103,7 +2108,10 @@
     state.cells = [];
     state.colHeads = [];
 
-    if (!sheet || !sheet.rows || !sheet.rows.length) {
+    // 裸网格模式：当成一张没有数据的空表来画（行列标 + 空白格子照旧）
+    const rows = blankMode ? [] : ((sheet && sheet.rows) || []);
+
+    if (!sheet || (!rows.length && !blankMode)) {
       table.appendChild(el('div', 'hx-empty', '这张工作表里没有数据。'));
       renderTabs();
       showTrail();
@@ -2151,7 +2159,7 @@
 
     // 数据行（行既可以是单元格数组，也可以是 {cells:[...]} 包装；
     // 还可以是 {group:'分类名', groupNote:'…', href:'…'} 的分组标题行）
-    sheet.rows.forEach((rowCells, ri) => {
+    rows.forEach((rowCells, ri) => {
       if (!Array.isArray(rowCells) && rowCells && rowCells.group != null) {
         const gtr = el('div', 'hx-tr hx-tr-group');        const grh = el('div', 'hx-rowhead');
         grh.textContent = String(ri + 1);
@@ -2226,7 +2234,7 @@
     // 这些行也进 state.cells，所以可以点选、可以用方向键走下去。
     const filler = clamp(num(CFG.fillerRows), 0, 500);
     for (let k = 0; k < filler; k++) {
-      const ri = sheet.rows.length + k;
+      const ri = rows.length + k;
       const tr = el('div', 'hx-tr hx-filler');
       const rh = el('div', 'hx-rowhead');
       rh.textContent = String(ri + 1);
@@ -2269,9 +2277,11 @@
     state.tabs = [];
     model.sheets.forEach((s, i) => {
       const t = el('div', 'hx-sheet-tab' + (i === state.sheet ? ' active' : ''));
-      const span = el('span', '', s.name || ('Sheet' + (i + 1)));
+      // 裸网格模式：标签名也不能透露版面，统一叫 Sheet1 / Sheet2…
+      const label = blankMode ? ('Sheet' + (i + 1)) : (s.name || ('Sheet' + (i + 1)));
+      const span = el('span', '', label);
       t.appendChild(span);
-      t.title = s.name || '';
+      t.title = blankMode ? '' : (s.name || '');
       t.addEventListener('click', () => {
         if (state.sheet === i) return;
         state.sheet = i;
@@ -2285,7 +2295,7 @@
     // 分页（放在工作表标签右侧，紧挨状态栏，像 Excel 的滚动条区域）
     const pager = R.pager;
     pager.innerHTML = '';
-    const pg = model.pager;
+    const pg = blankMode ? null : model.pager;   // 裸网格：分页 / 计数也一并藏掉
     if (pg && pg.total > 1) {
       const prev = el('a', pg.current <= 1 ? 'off' : '', '◀ 上一页');
       if (pg.current > 1) prev.href = pg.href(pg.current - 1);
@@ -2314,7 +2324,7 @@
       pager.appendChild(goBtn);
     } else {
       const st = el('span', '', '就绪');
-      const count = el('span', '', '计数: ' + dataRowCount(model.sheets[state.sheet] || {}));
+      const count = el('span', '', blankMode ? '' : '计数: ' + dataRowCount(model.sheets[state.sheet] || {}));
       pager.appendChild(st);
       pager.appendChild(count);
     }
@@ -2566,7 +2576,7 @@
 
   function bindKeys() {
     document.addEventListener('keydown', e => {
-      // 老板键：Esc 立刻切回原页面 / 再按一次回来（不写存储）
+      // 老板键：连按两下 Esc = 切到「裸网格」（藏掉版面内容，只留空白表格）
       if (e.key === 'Escape') {
         if (!CFG.enabled) return;
         // 设置面板开着时，Esc 先关面板
@@ -2578,6 +2588,21 @@
           R.search.value = '';
           return;
         }
+        const now = Date.now();
+        if (now - lastEscAt < 450) {           // 450ms 内第二下
+          lastEscAt = 0;
+          e.preventDefault();
+          e.stopPropagation();
+          setBlank(!blankMode);
+          return;
+        }
+        lastEscAt = now;                        // 第一下：先记着，别动页面
+        e.preventDefault();
+        return;
+      }
+      // Alt+`：切回虎扑原页面（原来的 Esc 老板键搬到这里，再按一次切回来）
+      if (e.altKey && !e.ctrlKey && !e.metaKey &&
+          (e.code === 'Backquote' || e.key === '`' || e.key === '~')) {
         e.preventDefault();
         peek();
         return;
@@ -2722,7 +2747,8 @@
 
   const SHORTCUTS = [
     ['Alt+E', '开关 Excel 模式（会记住）'],
-    ['Esc', '老板键：立刻切回虎扑原页面，再按一次回来'],
+    ['Esc Esc', '老板键：隐藏版面内容，只留空白网格（再按一次恢复）'],
+    ['Alt+反引号', '切回虎扑原页面；再按一次切回来'],
     ['↑ ↓ ← →', '像 Excel 一样移动选中的单元格'],
     ['PageUp / PageDown', '上下翻 20 行'],
     ['Home / Ctrl+Home / End', '跳到本行首列 / A1 / 本行末列'],
@@ -3362,11 +3388,36 @@
     else { setTitle(); setFavicon(); }
   }
 
+  /**
+   * 裸网格模式 —— 新的老板键（连按两下 Esc）。
+   *
+   * 把一切跟版面 / 帖子有关的内容都拿掉：单元格数据、工作表标签名、编辑栏面包屑、
+   * 分页、计数、账号区 —— 只留 Excel 外壳 + 一张空白网格（行列标和空白格子照旧）。
+   * 不改模型、也不动 DOM 结构，只是重画时走「空表」分支，所以再按 Esc Esc 就原样恢复。
+   */
+  // 记在 sessionStorage 里：老板键期间如果切去原生页面又切回来（会重载文档），
+  // 回来时还是保持「裸网格」，不会把内容又露出来
+  let blankMode = (function () {
+    try { return sessionStorage.getItem('hx.blank') === '1'; } catch (e) { return false; }
+  })();
+  let lastEscAt = 0;
+
+  function setBlank(on) {
+    blankMode = !!on;
+    try {
+      if (blankMode) sessionStorage.setItem('hx.blank', '1');
+      else sessionStorage.removeItem('hx.blank');
+    } catch (e) { /* 忽略 */ }
+    if (R && R.root) R.root.classList.toggle('hx-blank', blankMode);
+    if (R) render();
+    toast(blankMode ? '已隐藏内容 · 再按 Esc Esc 恢复' : '已恢复内容');
+  }
+
   function toggle() {
     CFG.enabled = !CFG.enabled;
     saveCfg();
     apply();
-    if (CFG.enabled) toast('已开启 Excel 模式（Alt+E 关闭，Esc 快速切回）');
+    if (CFG.enabled) toast('已开启 Excel 模式（Alt+E 关闭，Esc Esc 藏内容）');
   }
 
   function apply() {
@@ -3543,7 +3594,7 @@
       setTimeout(() => { if (CFG.enabled) { watchAccount(); renderAccount(); } }, 2500);
       if (!onReady._hinted && !START_NATIVE) {
         onReady._hinted = true;
-        toast('Excel 模式已开启 · Alt+E 关闭 · Esc 切回原页面 · 右上角 ⚙ 设置', 5600);
+        toast('Excel 模式已开启 · Alt+E 关闭 · Esc Esc 藏内容 · Alt+反引号 看原页面 · 右上角 ⚙ 设置', 5600);
       }
     }
     BOOT.domReady = Math.round(performance.now());
