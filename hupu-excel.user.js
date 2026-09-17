@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         虎扑 Excel · 摸鱼模式
 // @namespace    https://bbs.hupu.com/
-// @version      1.0.0
+// @version      1.1.0
 // @author       you
 // @license      MIT
 // @description  把 bbs.hupu.com 伪装成 Excel 工作簿：读页面自带的 $$data / __NEXT_DATA__ 渲染成带行号列标的表格，支持点选单元格、公式栏、多工作表、翻页；右上角 ⚙ 打开设置面板，Esc 一键切回原页面。
@@ -31,6 +31,9 @@
  *   2. 伪装
  *      - 原生 DOM 只是 display:none 藏起来（不移除），站点自己的 JS 照常跑，
  *        链接、登录态、埋点都不受影响。
+ *      - 站内链接走「软导航」：fetch 回目标页的 HTML、解析出数据后在同一个
+ *        文档里重画，浏览器不换文档 —— 所以切版面 / 进帖子 / 翻页都不会
+ *        闪一下原生页面（详见第 10 节）。
  *      - 自己渲染一整窗 Excel：标题栏 / 选项卡 / 功能区 / 编辑栏 / 行列标 /
  *        冻结窗格 / 工作表标签 / 状态栏，行号列标用 Excel 的真实规则（A..Z、AA..）。
  *      - 支持点选单元格（名称框 + 编辑栏联动）、方向键移动、回车打开链接、
@@ -61,6 +64,20 @@
     script: (typeof performance !== 'undefined' ? Math.round(performance.now()) : 0),
     hide: -1, shell: -1, domReady: -1, firstPaint: -1, fcp: -1
   };
+
+  /*
+   * 「这次加载直接显示原生页面」的一次性信号。
+   *
+   * 软导航（见第 10 节）只换 Excel 视图、不换物理 DOM，所以软导航之后按 Esc
+   * 切回原页面会看到上一次整页加载的旧内容。为了老板键靠得住，这种时候我们会
+   * 重新加载当前地址，并在这里留个标记：新文档启动时直接进原生模式，
+   * 而不是又变回 Excel。标记只消费一次。
+   */
+  let START_NATIVE = false;
+  try {
+    START_NATIVE = sessionStorage.getItem('hx.native') === '1';
+    if (START_NATIVE) sessionStorage.removeItem('hx.native');
+  } catch (e) { /* 无 sessionStorage 时忽略 */ }
 
   /* ============================== 1. 配置与存储 ============================== */
 
@@ -97,10 +114,18 @@
 
   /* ============================== 2. 小工具 ============================== */
 
-  const $$ = (sel, root) => (root || document).querySelector(sel);
-  const $$$ = (sel, root) => Array.prototype.slice.call((root || document).querySelectorAll(sel));
+  /*
+   * DOC 是「当前要解析的文档」。
+   *
+   * 正常情况下它就是 document（原生页面）；做软导航（见第 10 节）时会被临时
+   * 换成 fetch 回来、用 DOMParser 解析出的那份文档，这样数据读取那套函数不用
+   * 改签名，就能直接读「新页面」的 $$data / __NEXT_DATA__ / DOM。
+   */
+  let DOC = document;
+  const $$ = (sel, root) => (root || DOC).querySelector(sel);
+  const $$$ = (sel, root) => Array.prototype.slice.call((root || DOC).querySelectorAll(sel));
   /** 取第一个匹配元素（找不到返回 null，比 querySelector()[0] 安全） */
-  const one = (sel, root) => (root || document).querySelector(sel);
+  const one = (sel, root) => (root || DOC).querySelector(sel);
 
   function el(tag, cls, text) {
     const node = document.createElement(tag);
@@ -196,7 +221,7 @@
 
   /** 读取 Next.js 内联数据（帖子页 SSR 时存在） */
   function readNextData() {
-    const node = document.getElementById('__NEXT_DATA__');
+    const node = DOC.getElementById('__NEXT_DATA__');
     if (!node) return null;
     try { return JSON.parse(node.textContent); } catch (e) { return null; }
   }
@@ -229,7 +254,7 @@
   }
 
   function pageTitleText() {
-    return (document.title || '').replace(/\s*[-—|]\s*虎扑.*$/, '').trim();
+    return (DOC.title || '').replace(/\s*[-—|]\s*虎扑.*$/, '').trim();
   }
 
   /**
@@ -376,7 +401,7 @@
   function readPageData() {
     if (PAGE_DATA !== undefined) return PAGE_DATA;
     PAGE_DATA = null;
-    const scripts = document.querySelectorAll('script:not([src])');
+    const scripts = DOC.querySelectorAll('script:not([src])');
     for (let i = 0; i < scripts.length; i++) {
       const text = scripts[i].textContent || '';
       const at = text.indexOf('window.$$data');
@@ -1794,15 +1819,27 @@
     };
   }
 
-  function paint(model) {
-    // 重新渲染时尽量回到同一张工作表（改设置不该把用户踹回第一张表）
+  /**
+   * @param keepSheet 同一页面的重绘（改设置、看门狗补渲染）时传 true：尽量留在
+   *   用户原来那张工作表上，别把人踹回第一张。页面切换（软导航）不传：那是进了
+   *   新页面，要落到新页面自己的默认工作表（sheetName / 第一张）。
+   *
+   *   以前整页跳转时有「版面 A → 版面 B 自动显示 B」的效果，正是因为新文档
+   *   state.model 是空的、只能从 0 开始；软导航不会重置 state，所以得在这儿显式区分。
+   */
+  function paint(model, keepSheet) {
     const prevSheet = state.model && state.model.sheets[state.sheet] ? state.model.sheets[state.sheet].name : null;
     state.model = model;
     state.sheet = 0;
     state.sel = { r: 0, c: 0 };
-    if (prevSheet) {
+    if (keepSheet && prevSheet) {
       for (let i = 1; i < model.sheets.length; i++) {
         if (model.sheets[i].name === prevSheet) { state.sheet = i; break; }
+      }
+    } else if (model.sheetName) {
+      // 新页面的默认工作表（listFromData / threadFromNext / modelHome 都会给）
+      for (let i = 0; i < model.sheets.length; i++) {
+        if (model.sheets[i].name === model.sheetName) { state.sheet = i; break; }
       }
     }
     R.root.className = rootClass();
@@ -1813,6 +1850,11 @@
     R.book.textContent = book;
 
     renderAccount();
+    // 进新页面时表格从头看起（和整页跳转一致）；同一页面重绘则保留滚动位置
+    if (!keepSheet && R.table && R.table.parentNode) {
+      R.table.parentNode.scrollTop = 0;
+      R.table.parentNode.scrollLeft = 0;
+    }
     renderSheet();
   }
 
@@ -2018,18 +2060,18 @@
       input.addEventListener('keydown', e => {
         if (e.key !== 'Enter') return;
         const n = clamp(num(input.value) || 1, 1, pg.total);
-        location.href = pg.href(n);
+        go(pg.href(n));
       });
-      const go = el('button', '', 'GO');
-      go.addEventListener('click', () => {
+      const goBtn = el('button', '', 'GO');
+      goBtn.addEventListener('click', () => {
         const n = clamp(num(input.value) || 1, 1, pg.total);
-        location.href = pg.href(n);
+        go(pg.href(n));
       });
       pager.appendChild(prev);
       pager.appendChild(info);
       pager.appendChild(next);
       pager.appendChild(input);
-      pager.appendChild(go);
+      pager.appendChild(goBtn);
     } else {
       const st = el('span', '', '就绪');
       const count = el('span', '', '计数: ' + dataRowCount(model.sheets[state.sheet] || {}));
@@ -2096,6 +2138,21 @@
       }
     });
 
+    // Excel 里的站内链接走软导航，不让浏览器换文档 —— 切版面 / 进帖子 / 翻页
+    // 都不会再闪一下原生页面（原理见第 10 节）。外部链接（my.hupu.com、其它站）
+    // 保持原样：该新标签就新标签，该整页跳转就整页跳转。
+    root.addEventListener('click', e => {
+      if (!CFG.enabled || isPeek()) return;
+      if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+      const a = e.target && e.target.closest && e.target.closest('a[href]');
+      if (!a || !root.contains(a)) return;
+      if (a.target && a.target !== '_self') return;
+      if (!softable(a.href)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      go(a.href);
+    }, true);
+
     // 屏蔽事件冒泡到虎扑自己的全局监听器（原生 DOM 只是藏起来，监听器都还在）
     ['click', 'mousedown', 'mouseup', 'dblclick', 'contextmenu', 'keydown', 'keyup', 'wheel', 'touchstart']
       .forEach(type => root.addEventListener(type, e => e.stopPropagation()));
@@ -2106,7 +2163,7 @@
       if (e.key !== 'Enter') return;
       const q = R.search.value.trim();
       if (!q) return;
-      location.href = 'https://bbs.hupu.com/search?q=' + encodeURIComponent(q);
+      go('https://bbs.hupu.com/search?q=' + encodeURIComponent(q));
     });
 
     // 设置 / 回首页（标题栏图标）
@@ -2115,7 +2172,7 @@
     const home = one('.hx-home', root);
     if (home) home.addEventListener('click', e => {
       e.stopPropagation();
-      if (location.pathname !== '/') location.href = 'https://bbs.hupu.com/';
+      if (location.pathname !== '/') go('https://bbs.hupu.com/');
     });
 
     bindZoom();
@@ -2235,7 +2292,7 @@
       if (e.altKey && (e.key === 'ArrowLeft' || e.key === 'ArrowRight') && pg && pg.total > 1) {
         e.preventDefault();
         const n = pg.current + (e.key === 'ArrowRight' ? 1 : -1);
-        if (n >= 1 && n <= pg.total) location.href = pg.href(n);
+        if (n >= 1 && n <= pg.total) go(pg.href(n));
         return;
       }
 
@@ -2258,7 +2315,7 @@
         case 'Enter': {
           const cell = state.cells[sel.r] && state.cells[sel.r][sel.c];
           const href = cell && cell._cell && cell._cell.href;
-          if (href) { e.preventDefault(); location.href = href; }
+          if (href) { e.preventDefault(); go(href); }
           else { e.preventDefault(); setSel(sel.r + 1, sel.c); }
           return;
         }
@@ -2612,6 +2669,18 @@
 
   function peek(force) {
     const next = force == null ? !isPeek() : !!force;
+    // 软导航之后物理 DOM 还是旧的：先立刻切成原生页面（老板键要的就是「马上」），
+    // 同时重新加载当前地址，并在新文档里直接进原生模式 —— 等新文档上来，看到的
+    // 就是地址栏里那一页真正的原生页面了
+    if (next && location.href !== docUrl) {
+      try { sessionStorage.setItem('hx.native', '1'); } catch (e) { /* 忽略 */ }
+      document.documentElement.classList.add('hx-peek');
+      document.documentElement.classList.remove('hx-on');
+      restoreTitle();
+      restoreFavicon();
+      location.replace(location.href);
+      return;
+    }
     document.documentElement.classList.toggle('hx-peek', next);
     // 隐藏原生页面的规则挂在 hx-on 上，peek 时把它一并摘掉，
     // 让原生页面回到站点自己的样式（而不是被我们覆盖成 display:block）
@@ -2642,10 +2711,126 @@
       if (R && R.root) { R.root.remove(); R = null; }
       restoreTitle();
       restoreFavicon();
+      // 软导航过的话 DOM 是旧的，重新加载当前地址才能看到真正的原页面
+      if (location.href !== docUrl) location.replace(location.href);
     }
   }
 
   /* ============================== 10. 启动 ============================== */
+
+  /*
+   * ── 软导航：不换文档的页面切换 ─────────────────────────────────────────────
+   *
+   * 虎扑是「多文档」站点：点版面、点帖子、点下一页都是整页跳转。整页跳转会创建
+   * 一份新文档，而油猴只能在 document-start 注入脚本 —— 新文档从创建到第一次
+   * 绘制可能只有 ~30ms，脚本还没来得及挂锁，那一小段画出来的就是原生页面
+   * （README 里量过，这个窗口在页面里没法再往前压）。
+   *
+   * 所以 Excel 自己 UI 里的链接不再让浏览器换文档：自己 fetch 回新页面的 HTML、
+   * 用 DOMParser 解析、套同一套数据读取逻辑，然后在同一个文档里重画。文档不换，
+   * 原生页面就没有机会露脸。地址栏用 pushState 保持同步，前进/后退照常工作。
+   *
+   * 拿不到模型（搜索页、个人中心…）或请求失败时，退回原来的整页跳转。
+   */
+
+  const docUrl = location.href;   // 物理 DOM 真正对应的地址（软导航不会改 DOM）
+  let viewUrl = docUrl;           // Excel 里当前展示的地址
+  let viewDoc = document;         // Excel 里当前展示的那份文档（软导航时是 fetch 回来的）
+  let navSeq = 0;                 // 并发软导航：只认最后一次
+
+  /** 这个地址能不能软导航（同源、且是脚本能解析的 bbs 路由） */
+  function softable(url) {
+    let u;
+    try { u = new URL(url, location.href); } catch (e) { return false; }
+    if (u.origin !== location.origin) return false;
+    if (!/(^|\.)hupu\.com$/i.test(u.hostname)) return false;
+    const p = u.pathname.replace(/\/+$/, '') || '/';
+    if (p === '/') return true;
+    if (/^\/\d+(?:-\d+)?\.html$/.test(p)) return true;
+    if (/^\/[\w-]+(?:-\d+)?$/.test(p)) return true;
+    return false;
+  }
+
+  /** 用指定文档构建模型（默认当前 document）；DOC 用完还原 */
+  function buildModelFor(doc) {
+    const prev = DOC;
+    DOC = doc || document;
+    PAGE_DATA = undefined;
+    try {
+      return buildModel();
+    } finally {
+      DOC = prev;
+      PAGE_DATA = undefined;
+    }
+  }
+
+  function render() {
+    if (!CFG.enabled || !document.body) return;
+    let model = null;
+    try {
+      // 用「当前展示的那份文档」，而不是物理 DOM —— 否则软导航之后改任何设置
+      // 都会把表格退回上一次整页加载的内容
+      model = buildModelFor(viewDoc);
+    } catch (err) {
+      console.warn('[hupu-excel] 解析失败：', err);
+    }
+    if (!model || !model.sheets || !model.sheets.length) model = fallbackModel();
+    ensureRoot();
+    paint(model, true);   // 同一页面的重绘：留在用户原来那张表
+  }
+
+  /**
+   * 软导航：地址改成 url，同时在同一份文档里重画 Excel。
+   * 任何一步出问题都退回 location.href（整页跳转，行为同以前）。
+   */
+  function softNav(url, opts) {
+    opts = opts || {};
+    if (!CFG.enabled || isPeek() || !softable(url)) { location.href = url; return; }
+
+    let target;
+    try { target = new URL(url, location.href).href; } catch (e) { location.href = url; return; }
+    if (target === viewUrl) return;   // 已经展示的就是这页，别多压一条历史
+    if (opts.push !== false) {
+      try { history.pushState(null, '', target); } catch (e) { location.href = target; return; }
+    }
+    lastUrl = location.href;
+
+    const seq = ++navSeq;
+    toast('正在打开 ' + (shortPath(new URL(target).pathname) || target) + ' …');
+    // Accept 用普通文档的，别让服务端以为是 AJAX 而回 JSON
+    fetch(target, {
+      credentials: 'same-origin',
+      headers: { 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8' }
+    })
+      .then(res => {
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        return res.text().then(html => ({ html: html, finalUrl: res.url || target }));
+      })
+      .then(res => {
+        if (seq !== navSeq) return;                 // 期间又点了一次，这次作废
+        if (res.finalUrl !== location.href) {       // 跟随过重定向
+          try { history.replaceState(null, '', res.finalUrl); } catch (e) { /* 忽略 */ }
+          lastUrl = location.href;
+        }
+        const doc = new DOMParser().parseFromString(res.html, 'text/html');
+        let model = null;
+        try { model = buildModelFor(doc); } catch (e) { console.warn('[hupu-excel] 软导航解析失败：', e); }
+        if (!model || !model.sheets || !model.sheets.length) throw new Error('这个页面没有可摊开的数据');
+        viewDoc = doc;
+        viewUrl = location.href;
+        ensureRoot();
+        paint(model);
+        setTitle();
+      })
+      .catch(err => {
+        if (seq !== navSeq) return;
+        console.warn('[hupu-excel] 软导航失败，改用整页跳转：', err);
+        location.href = target;
+      });
+  }
+
+  /** 脚本自己 UI 里的跳转统一走这里：能软导航就软导航，否则整页跳转 */
+  function go(url) { softNav(url); }
 
   function hookHistory() {
     ['pushState', 'replaceState'].forEach(k => {
@@ -2665,20 +2850,11 @@
   function onUrlChange() {
     if (location.href === lastUrl) return;
     lastUrl = location.href;
-    if (CFG.enabled) { render(); setTitle(); }
-  }
-
-  function render() {
-    if (!CFG.enabled || !document.body) return;
-    let model = null;
-    try {
-      model = buildModel();
-    } catch (err) {
-      console.warn('[hupu-excel] 解析失败：', err);
-    }
-    if (!model || !model.sheets || !model.sheets.length) model = fallbackModel();
-    ensureRoot();
-    paint(model);
+    if (!CFG.enabled || isPeek()) return;
+    // 前进/后退：当前位置不是软导航自己切的，重新拉一份渲染
+    if (softable(location.href)) softNav(location.href, { push: false });
+    else if (location.href === docUrl) { viewDoc = document; viewUrl = docUrl; render(); }   // 回到物理 DOM 本身就是的那页
+    else location.reload();                       // 其它情况重新加载当前地址
   }
 
   function onReady() {
@@ -2687,12 +2863,12 @@
       render();
       renderAccount();
       watchAccount();
-      setTitle();
-      setFavicon();
-      watchTitle();
+      // 这次是「加载后直接显示原生页面」（软导航后按 Esc 触发的重载）：
+      // 外壳照建（Esc 再按一次就能看到 Excel），但不抢标题 / 图标
+      if (!START_NATIVE) { setTitle(); setFavicon(); watchTitle(); }
       // 账号区是站点 JS 异步渲染的，晚一点再补看一次
       setTimeout(() => { if (CFG.enabled) { watchAccount(); renderAccount(); } }, 2500);
-      if (!onReady._hinted) {
+      if (!onReady._hinted && !START_NATIVE) {
         onReady._hinted = true;
         toast('Excel 模式已开启 · Alt+E 关闭 · Esc 切回原页面 · 右上角 ⚙ 设置', 5600);
       }
@@ -2713,12 +2889,13 @@
   /** 越早越好：先把原生页面藏起来，避免闪一下再变成 Excel */
   function earlyStart() {
     injectCss();
-    if (CFG.enabled) {
+    if (CFG.enabled && !START_NATIVE) {
       document.documentElement.classList.add('hx-on');
       if (BOOT.hide < 0) BOOT.hide = Math.round(performance.now());
     } else {
-      // 没开 Excel 模式时也挂上 hx-peek：这样浏览器级 CSS（见 README）只要写
-      // html:not(.hx-peek) 一条就能既挡首帧、又不会在关掉脚本时把页面藏没
+      // 没开 Excel 模式（或这次要直接显示原生页面）时挂上 hx-peek：这样浏览器级
+      // CSS（见 README）只要写 html:not(.hx-peek) 一条就能既挡首帧、又不会在
+      // 关掉脚本时把页面藏没
       document.documentElement.classList.add('hx-peek');
     }
   }
@@ -2740,8 +2917,7 @@
     ensureRoot();
     renderAccount();
     applyTweaks();
-    setTitle();
-    setFavicon();
+    if (!START_NATIVE) { setTitle(); setFavicon(); }
   }
 
   /**
