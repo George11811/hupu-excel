@@ -625,7 +625,61 @@
     if (th && th.list && th.list.length) {
       try { return listFromData(r, data, tp, th); } catch (e) { /* 退回 DOM */ }
     }
+    // 分类页（/all-gambia、/all-sports…）：$$data 在 pageData 里，不在 topic 里
+    if (data && !tp) {
+      const zone = modelZone(data);
+      if (zone) return zone;
+    }
     return listFromDom(r);
+  }
+
+  /**
+   * 分类页 —— 面包屑里点「步行街」「综合体育」这种。
+   *
+   * 它既不是版面页也不是首页：$$data 在 pageData 里，
+   *   pageData.category = { name, url, hot / topics: [子板块…] }
+   *   pageData.threads  = 该分类下的帖子流（70 条）
+   * 以前只认 data.topic.threads，于是整页落到「没有数据」的兜底表。
+   * 这里把它摊成「分类帖子流 + 分类下的板块」两张表，跟版面页观感一致。
+   */
+  function modelZone(data) {
+    const pd = data && data.pageData;
+    const cat = pd && pd.category;
+    if (!cat) return null;
+
+    const threads = (pd.threads || []).filter(t => t && t.url);
+    // topics 不是每次都下发，hot 一定有；两个都当子板块列表用
+    const boardList = (cat.topics && cat.topics.length) ? cat.topics : (cat.hot || []);
+    const boards = boardList.filter(b => b && b.name && b.url);
+    if (!threads.length && !boards.length) return null;
+
+    const name = cat.name || pageTitleText() || '分类';
+    const sheets = [];
+    if (threads.length) sheets.push(feedSheet(name, threads));
+    if (boards.length) {
+      sheets.push(boardSheet(name + ' · 板块', boards.map(b => ({
+        name: b.name,
+        url: b.url,
+        cat: name,
+        count: b.count,
+        countText: b.countText,
+        cateId: b.cateId || cat.cateId
+      })), false));
+    }
+    navSheets().forEach(s => sheets.push(s));
+
+    const crumbList = [
+      { title: '社区', url: 'https://bbs.hupu.com/' },
+      { title: name, url: abs(cat.url) }
+    ];
+    return {
+      title: name,
+      crumbs: crumbList.map(c => c.title),
+      crumbList: crumbList,
+      sheetName: sheets[0].name,
+      pager: null,
+      sheets: sheets
+    };
   }
 
   /* ---------- 3.2 帖子页（__NEXT_DATA__ 优先，DOM 兜底） ---------- */
