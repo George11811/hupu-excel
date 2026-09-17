@@ -1929,7 +1929,12 @@
     if (!CFG.imgHoverZoom) hideZoomPop();
   }
 
-  /** 编辑栏默认显示面包屑（可点的链接）» 标题；选中单元格后显示单元格内容 */
+  /**
+   * 编辑栏固定显示面包屑（可点的链接）» 标题。
+   *
+   * 它**不会**因为选中单元格而被单元格内容顶掉（以前会，结果点一下回复就找不到
+   * 「回上一层」的入口了）。单元格内容本来就在格子里显示，这一行留给导航和标题。
+   */
   function showTrail() {
     const model = state.model;
     if (!model || !R) return;
@@ -1977,6 +1982,7 @@
     if (!sheet || !sheet.rows || !sheet.rows.length) {
       table.appendChild(el('div', 'hx-empty', '这张工作表里没有数据。'));
       renderTabs();
+      showTrail();
       return;
     }
 
@@ -2159,8 +2165,8 @@
     setSel._row = rowHead;
 
     R.namebox.textContent = colName(c) + (r + 1);
-    R.formula.textContent = (cell._cell && cell._cell.text) || '';
-
+    // 编辑栏不再被单元格内容顶掉：它固定显示面包屑（社区 » 版面 » … » 标题），
+    // 点回复也能随时看到自己在哪、点着回上一层。单元格内容本来就在格子里。
     if (scroll !== false && cell.scrollIntoView) {
       const box = R.table.parentNode;
       const cb = cell.getBoundingClientRect();
