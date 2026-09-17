@@ -2,13 +2,15 @@
 // @name         虎扑 Excel · 摸鱼模式
 // @namespace    https://bbs.hupu.com/
 // @version      1.1.0
-// @author       you
+// @author       lnik
 // @license      MIT
-// @description  把 bbs.hupu.com 伪装成 Excel 工作簿：读页面自带的 $$data / __NEXT_DATA__ 渲染成带行号列标的表格，支持点选单元格、公式栏、多工作表、翻页；右上角 ⚙ 打开设置面板，Esc 一键切回原页面。
+// @description  把 bbs.hupu.com 伪装成 Excel 工作簿：读页面自带的 $$data / __NEXT_DATA__ 渲染成带行号列标的表格，支持点选单元格、公式栏、多工作表、翻页、发帖回帖；右上角 ⚙ 打开设置面板，Esc Esc 藏内容、Alt+反引号切回原页面。
 // @match        *://*.hupu.com/*
 // @match        *://hupu.com/*
 // @grant        GM_getValue
 // @grant        GM_setValue
+// @grant        GM_registerMenuCommand
+// @grant        GM_unregisterMenuCommand
 // @run-at       document-start
 // @noframes
 // ==/UserScript==
@@ -1257,7 +1259,7 @@
   /*
    * 全部样式都限定在 #hx-root 里，并用一段 scope reset 挡掉虎扑自己的全局样式
    * （虎扑是 CSS Modules + 少量全局 tag 选择器，不挡会串味）。
-   * 主题通过 CSS 变量切换：office（默认，绿）/ tencent（蓝）/ wps（深蓝）。
+   * 主题通过 CSS 变量切换：office（默认，绿）/ tencent（蓝）/ wps（深蓝）/ feishu（飞书云文档）。
    */
   const CSS = `
   html.hx-on, html.hx-on body { overflow: hidden !important; background: #fff !important; }
@@ -1310,8 +1312,11 @@
     min-width: 0; max-width: none; background-repeat: no-repeat;
   }
   #hx-root svg { display: block; width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.2; stroke-linecap: round; stroke-linejoin: round; }
-  /* 裸网格模式（Esc Esc）：只留外壳和空白网格，账号区这类身份信息也一起藏掉 */
-  #hx-root.hx-blank .hx-acct { display: none !important; }
+  /* 裸网格模式（Esc Esc）：只留外壳和空白网格。账号区（身份信息）、以及旁边那对
+     「发帖 / 回复」按钮（会透露这是个论坛）都要一起藏掉；用 !important 盖掉
+     renderAccount() 写在元素上的 inline display */
+  #hx-root.hx-blank .hx-acct,
+  #hx-root.hx-blank .hx-comp-btn { display: none !important; }
   #hx-root a { color: inherit; }
   #hx-root img { max-width: none; }
   #hx-root input { color: inherit; }
@@ -1323,7 +1328,7 @@
     --head-bg: #f9fafb; --head-fg: #464d5a; --link: #1e6fff;
     font-family: -apple-system, "Helvetica Neue", Helvetica, "PingFang SC", "Microsoft YaHei", sans-serif;
   }
-  #hx-root.hx-t-tencent .hx-ribbon { display: none; }
+  #hx-root.hx-t-tencent .hx-ribbon { display: none; }   /* 精简版：整条功能区不要，发帖/回复在标题栏 */
   #hx-root.hx-t-tencent .hx-titlebar { height: 40px; }
   #hx-root.hx-t-tencent .hx-tabs { height: 26px; border-bottom-color: #ebebeb; }
   #hx-root.hx-t-tencent .hx-tab { font-size: 12px; color: #646a73; }
@@ -1342,6 +1347,61 @@
   #hx-root.hx-t-wps .hx-search::placeholder { color: rgba(255,255,255,.7); }
   #hx-root.hx-t-wps .hx-win, #hx-root.hx-t-wps .hx-acct { color: #fff; }
   #hx-root.hx-t-wps .hx-tab.file { background: #1f56ad; }
+
+  /* ---------- 主题：飞书云文档 ---------- */
+  #hx-root.hx-t-feishu {
+    --accent: #3370ff; --accent-dark: #245bdb; --accent-soft: #e1eaff;
+    --title-bg: #ffffff; --title-fg: #1f2329; --title-sub: #646a73;
+    --chrome-bg: #ffffff; --ribbon-bg: #ffffff;
+    --border: #e5e6eb; --border-strong: #d0d3d6; --gridline: #ebecef;
+    --head-bg: #f5f6f7; --head-fg: #646a73; --link: #3370ff;
+    --text: #1f2329; --muted: #8f959e;
+    font-family: -apple-system, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  }
+  /* 顶栏 = 飞书文档头：白底、浅分隔线、蓝色「分享」主按钮 */
+  #hx-root.hx-t-feishu .hx-titlebar { height: 48px; gap: 8px; padding: 0 10px 0 14px; border-bottom-color: #eff0f1; }
+  #hx-root.hx-t-feishu .hx-logo, #hx-root.hx-t-feishu .hx-logo svg { width: 20px; height: 20px; }
+  #hx-root.hx-t-feishu .hx-book { font-size: 14px; font-weight: 500; padding: 4px 8px; border-radius: 6px; }
+  #hx-root.hx-t-feishu .hx-search { width: 190px; height: 28px; border: none; background: #f2f3f5; border-radius: 6px; padding: 0 10px; }
+  #hx-root.hx-t-feishu .hx-search:focus { background: #fff; box-shadow: inset 0 0 0 1px var(--accent); }
+  #hx-root.hx-t-feishu .hx-acct { gap: 8px; color: #646a73; }
+  #hx-root.hx-t-feishu .hx-chip { padding: 4px 10px; border-radius: 6px; }
+  #hx-root.hx-t-feishu .hx-chip:hover { background: #f2f3f5; }
+  #hx-root.hx-t-feishu .hx-share { background: var(--accent); color: #fff; }
+  #hx-root.hx-t-feishu .hx-share:hover { background: var(--accent-dark); }
+  #hx-root.hx-t-feishu .hx-tbtn { border-radius: 6px; }
+  /* 文档标签行：胶囊状，选中浅蓝底 + 蓝字 */
+  #hx-root.hx-t-feishu .hx-tabs { height: 38px; align-items: center; padding: 0 10px; gap: 2px; border-bottom-color: #eff0f1; }
+  #hx-root.hx-t-feishu .hx-tab { height: 28px; line-height: 28px; padding: 0 12px; border: none; border-radius: 6px; font-size: 13px; color: #646a73; }
+  #hx-root.hx-t-feishu .hx-tab:hover { background: #f2f3f5; }
+  #hx-root.hx-t-feishu .hx-tab.file { background: transparent; color: #646a73; font-weight: 400; padding: 0 12px; }
+  #hx-root.hx-t-feishu .hx-tab.active { background: #e1eaff; color: #3370ff; font-weight: 500; }
+  #hx-root.hx-t-feishu .hx-tab.active::after { display: none; }
+  #hx-root.hx-t-feishu .hx-tabs-right { padding-bottom: 0; }
+  /* 功能区 → 飞书那种扁平工具栏：一行图标+文字，去掉分组标题 */
+  #hx-root.hx-t-feishu .hx-ribbon { height: 46px; align-items: center; padding: 0 10px; border-bottom-color: #eff0f1; overflow-x: auto; overflow-y: hidden; }
+  #hx-root.hx-t-feishu .hx-ribbon::-webkit-scrollbar { height: 0; }   /* 需要时 Shift+滚轮横向滚，平时看不见滚动条 */
+  #hx-root.hx-t-feishu .hx-group { border-right: none; padding: 0 2px; }
+  #hx-root.hx-t-feishu .hx-gtitle { display: none; }
+  #hx-root.hx-t-feishu .hx-gbody { flex-direction: row !important; align-items: center !important; gap: 6px !important; }
+  #hx-root.hx-t-feishu .hx-btn { flex-direction: row; gap: 4px; min-width: 0; max-width: none; padding: 4px 8px; border-radius: 6px; }
+  #hx-root.hx-t-feishu .hx-btn .i, #hx-root.hx-t-feishu .hx-btn.big .i { height: auto; }
+  #hx-root.hx-t-feishu .hx-btn .t { font-size: 12px; color: #1f2329; }
+  #hx-root.hx-t-feishu .hx-btn:hover { background: #f2f3f5; border-color: transparent; }
+  #hx-root.hx-t-feishu .hx-combo { height: 26px; border-radius: 6px; }
+  #hx-root.hx-t-feishu .hx-col2, #hx-root.hx-t-feishu .hx-numcell { flex-direction: row; align-items: center; gap: 2px; }
+  /* 编辑栏 */
+  #hx-root.hx-t-feishu .hx-formulabar { height: 30px; border-bottom-color: #eff0f1; }
+  #hx-root.hx-t-feishu .hx-namebox, #hx-root.hx-t-feishu .hx-fx, #hx-root.hx-t-feishu .hx-formula { line-height: 29px; }
+  #hx-root.hx-t-feishu .hx-namebox, #hx-root.hx-t-feishu .hx-fx { border-right-color: #eff0f1; color: #646a73; }
+  /* 表格：浅灰表头、更浅的格线 */
+  #hx-root.hx-t-feishu .hx-coll { border-right-color: #eff0f1; border-bottom-color: #e5e6eb; }
+  #hx-root.hx-t-feishu .hx-rowhead, #hx-root.hx-t-feishu .hx-cell { border-bottom-color: #f0f1f2; }
+  #hx-root.hx-t-feishu .hx-coll.sel, #hx-root.hx-t-feishu .hx-rowhead.sel { background: #e1eaff; color: #245bdb; }
+  /* 底部工作表标签 / 状态栏 */
+  #hx-root.hx-t-feishu .hx-sheet-tab { background: #f5f6f7; border-right-color: #eff0f1; }
+  #hx-root.hx-t-feishu .hx-sheet-tab.active { background: #fff; color: #3370ff; }
+  #hx-root.hx-t-feishu .hx-status { color: #646a73; }
 
   /* ---------- 标题栏 ---------- */
   .hx-titlebar {
@@ -1371,6 +1431,13 @@
     border-radius: 2px; background: #fff; color: var(--text);
     padding: 0 8px; font-size: 12px; outline: none;
   }
+  /* 标题栏的「发帖 / 回复」：带文字标签 + 主题色，所有皮肤里都一眼能看到
+     （腾讯皮肤会隐藏整个功能区，飞书皮肤的一行工具栏又不一定放得下最后一组） */
+  .hx-comp-btn { width: auto; height: 24px; padding: 0 9px; gap: 4px; border-radius: 4px; color: var(--accent); font-size: 12px; }
+  .hx-comp-btn::after { content: attr(data-label); }
+  .hx-comp-btn:hover { background: var(--accent-soft); }
+  #hx-root.hx-t-wps .hx-comp-btn { color: #fff; }
+  #hx-root.hx-t-wps .hx-comp-btn:hover { background: rgba(255,255,255,.18); }
   .hx-win { display: flex; align-items: center; color: var(--title-sub); margin-left: 6px; flex: 0 0 auto; }
   .hx-win i { width: 34px; height: 30px; display: flex; align-items: center; justify-content: center; font-style: normal; font-size: 12px; }
   .hx-win i:hover { background: rgba(0,0,0,.07); }
@@ -1866,12 +1933,9 @@
     { title: '数字', html: numberGroup() },
     { title: '样式', html: styleGroup() },
     { title: '单元格', html: gbtn('insertCell', '插入') + gbtn('deleteCell', '删除') + gbtn('formatCell', '格式') },
-    { title: '编辑', html: gbtn('sum', '求和') + gbtn('fillDown', '填充') + gbtn('clear', '清除') + gbtn('sort', '排序') + gbtn('find', '查找') },
-    // 真正能用的两个按钮：发新帖 / 回复本帖（见 8.6 节）
-    { title: '帖子', html:
-      '<div class="hx-btn" data-act="newthread" title="发新帖（当前版面）"><div class="i">' + ICONS.pen + '</div><div class="t">发新帖</div></div>' +
-      '<div class="hx-btn" data-act="reply" title="回复本帖（选中某层则引用该层）"><div class="i">' + ICONS.comment + '</div><div class="t">回复</div></div>'
-    }
+    // 发帖 / 回复只在标题栏（见 8.6 节）：功能区这边曾经也放了一组，
+    // 但点了才发现重复，而且腾讯皮肤本来就不显示功能区，留着反而更乱
+    { title: '编辑', html: gbtn('sum', '求和') + gbtn('fillDown', '填充') + gbtn('clear', '清除') + gbtn('sort', '排序') + gbtn('find', '查找') }
   ];
 
   const TAB_NAMES = ['文件', '开始', '插入', '页面布局', '公式', '数据', '审阅', '视图', '安全', '开发工具', '特色功能'];
@@ -1915,6 +1979,10 @@
         '<div class="hx-spacer"></div>' +
         '<input class="hx-search" type="text" placeholder="搜索（在虎扑站内搜索）" spellcheck="false">' +
         '<div class="hx-acct"></div>' +
+        // 发新帖 / 回复在这儿也放一份：腾讯皮肤会把整个功能区隐藏，飞书皮肤的一行
+        // 工具栏又可能放不下最后一组，只有标题栏是所有皮肤都在的地方
+        '<div class="hx-tbtn hx-comp-btn" data-act="newthread" data-label="发帖" title="发新帖">' + ICONS.pen + '</div>' +
+        '<div class="hx-tbtn hx-comp-btn" data-act="reply" data-label="回复" title="回复本帖（选中某层则引用该层）">' + ICONS.comment + '</div>' +
         '<div class="hx-tbtn hx-home" title="返回社区首页">' + ICONS.home + '</div>' +
         '<div class="hx-tbtn hx-gear" title="设置（Excel 选项）">' + ICONS.gear + '</div>' +
         '<div class="hx-win"><i>−</i><i>▢</i><i class="close">✕</i></div>' +
@@ -2588,12 +2656,16 @@
           R.search.value = '';
           return;
         }
+        // 已经在「原生页面」（Alt+反引号 切过去）时，单按 Esc 就切回 Excel
+        if (isPeek()) { e.preventDefault(); e.stopPropagation(); peek(false); return; }
+        // 已经在「裸网格」时，单按 Esc 先恢复内容（不用非得再按两下）
+        if (blankMode) { lastEscAt = 0; e.preventDefault(); e.stopPropagation(); setBlank(false); return; }
         const now = Date.now();
         if (now - lastEscAt < 450) {           // 450ms 内第二下
           lastEscAt = 0;
           e.preventDefault();
           e.stopPropagation();
-          setBlank(!blankMode);
+          setBlank(true);
           return;
         }
         lastEscAt = now;                        // 第一下：先记着，别动页面
@@ -2607,8 +2679,20 @@
         peek();
         return;
       }
+      // Alt+Shift+E：配置被改坏（或整个界面消失）时的兜底 —— 恢复默认设置并开启
+      if (e.altKey && e.shiftKey && !e.ctrlKey && !e.metaKey &&
+          (e.key === 'e' || e.key === 'E' || e.code === 'KeyE')) {
+        e.preventDefault();
+        Object.assign(CFG, DEFAULTS);
+        try { sessionStorage.removeItem('hx.blank'); } catch (err) { /* 忽略 */ }
+        blankMode = false;
+        saveCfg();
+        apply();
+        toast('已恢复默认设置并开启 Excel 模式');
+        return;
+      }
       // Alt+E 开关 Excel 模式
-      if (e.altKey && !e.ctrlKey && (e.key === 'e' || e.key === 'E' || e.code === 'KeyE')) {
+      if (e.altKey && !e.shiftKey && !e.ctrlKey && (e.key === 'e' || e.key === 'E' || e.code === 'KeyE')) {
         e.preventDefault();
         toggle();
         return;
@@ -2675,22 +2759,20 @@
    * type: bool（开关）/ enum（下拉）/ text（输入框）
    */
   const SETTINGS = [
-    {
-      g: '常规', key: 'enabled', type: 'bool', title: 'Excel 模式',
-      desc: '关掉就直接显示虎扑原页面，和按 Alt+E 一个效果'
-    },
+    // 注意：没有「Excel 模式」这一项。关掉它整个界面（连齿轮）都会消失，放在页面内的
+    // 面板里太容易误触、也容易让人以为脚本坏了 —— 它现在在油猴菜单里（registerMenus）
     {
       g: '常规', key: 'theme', type: 'enum', title: '皮肤',
-      options: [['office', 'Office（绿，带功能区）'], ['tencent', '腾讯文档（蓝，极简）'], ['wps', 'WPS（深蓝）']],
-      desc: '切换整体配色；腾讯文档皮肤会隐藏功能区，更像在线表格'
+      options: [['office', 'Office（绿，带功能区）'], ['tencent', '腾讯文档（蓝，极简）'], ['wps', 'WPS（深蓝）'], ['feishu', '飞书云文档（蓝，扁平工具栏）']],
+      desc: '切换整体配色；腾讯文档皮肤会隐藏功能区，飞书皮肤把功能区压成一行扁平工具栏'
     },
     {
       g: '常规', key: 'book', type: 'text', title: '工作簿名称',
       desc: '显示在浏览器标签和标题栏；留空则使用页面标题'
     },
     {
-      g: '视图', key: 'showAccount', type: 'bool', title: '显示账号区',
-      desc: '标题栏右侧的登录/消息/分享/批注；登录后会自动显示你的昵称与头像'
+      g: '视图', key: 'showAccount', type: 'bool', title: '显示账号区 / 发帖·回复',
+      desc: '标题栏右侧的登录、消息、分享、批注、昵称头像，以及挨着的「发帖 / 回复」按钮'
     },
     {
       g: '视图', key: 'showUrl', type: 'bool', title: '显示「路径」列',
@@ -2747,8 +2829,9 @@
 
   const SHORTCUTS = [
     ['Alt+E', '开关 Excel 模式（会记住）'],
-    ['Esc Esc', '老板键：隐藏版面内容，只留空白网格（再按一次恢复）'],
-    ['Alt+反引号', '切回虎扑原页面；再按一次切回来'],
+    ['Esc Esc', '老板键：隐藏版面内容，只留空白网格（单按 Esc 恢复）'],
+    ['Alt+反引号', '切回虎扑原页面；再按一次（或按 Esc）切回来'],
+    ['Alt+Shift+E', '兜底：恢复默认设置并重新开启 Excel 模式'],
     ['↑ ↓ ← →', '像 Excel 一样移动选中的单元格'],
     ['PageUp / PageDown', '上下翻 20 行'],
     ['Home / Ctrl+Home / End', '跳到本行首列 / A1 / 本行末列'],
@@ -2835,8 +2918,11 @@
       if (g === '关于') {
         body = SHORTCUTS.map(k =>
           '<div class="hx-key-row"><kbd>' + esc(k[0]) + '</kbd><span>' + esc(k[1]) + '</span></div>').join('');
-        body += '<div class="hx-set-desc" style="margin-top:12px">虎扑 Excel · 摸鱼模式 v1.0.0 —— ' +
-          '只改外观，不发送任何请求、不碰账号数据。数据来自页面自身的 window.$$data / __NEXT_DATA__。</div>';
+        body += '<div class="hx-set-desc" style="margin-top:12px">虎扑 Excel · 摸鱼模式 v1.1.0 —— ' +
+          '只改外观、不碰账号数据。数据来自页面自身的 window.$$data / __NEXT_DATA__。</div>';
+        body += '<div class="hx-set-desc" style="margin-top:8px">开关 Excel 模式不在这个面板里：' +
+          '点油猴图标 →「虎扑 Excel · 摸鱼模式」→「开关 Excel 模式」（或按 Alt+E）。' +
+          '它会整个界面一起显示 / 隐藏，所以放在菜单里更不容易误触。</div>';
         body += '<div class="hx-set-desc" style="margin-top:8px">启动时序：' + esc(bootSummary()) + '</div>';
       } else {
         body = SETTINGS.filter(s => s.g === g).map(settingRowHtml).join('');
@@ -2941,14 +3027,21 @@
   /** 标题栏账号区：登录后显示昵称 + 头像，未登录显示「登录 / 消息」 */
   function renderAccount() {
     if (!R || !R.acct) return;
-    if (!CFG.showAccount) { R.acct.style.display = 'none'; return; }
+    // 「发帖 / 回复」就贴在账号区旁边，跟着这个开关一起显示 / 隐藏
+    const compBtns = $$$('.hx-comp-btn', R.root);
+    if (!CFG.showAccount) {
+      R.acct.style.display = 'none';
+      compBtns.forEach(b => { b.style.display = 'none'; });
+      return;
+    }
     R.acct.style.display = 'flex';
+    compBtns.forEach(b => { b.style.display = ''; });
 
     const acc = readAccount();
     if (acc) {
       R.acct.innerHTML =
         '<span class="hx-chip">' + ICONS.bell + '消息</span>' +
-        '<span class="hx-chip">' + ICONS.share + '分享</span>' +
+        '<span class="hx-chip hx-share">' + ICONS.share + '分享</span>' +
         '<span class="hx-chip">' + ICONS.comment + '批注</span>' +
         '<a class="hx-chip hx-account" href="' + esc(acc.url || 'https://my.hupu.com') + '" target="_blank" rel="noreferrer">' +
         (acc.avatar ? '<img class="hx-avatar-img" src="' + esc(acc.avatar) + '" referrerpolicy="no-referrer">'
@@ -2959,7 +3052,7 @@
       R.acct.innerHTML =
         '<span class="hx-chip">' + ICONS.user + '登录</span>' +
         '<span class="hx-chip">' + ICONS.bell + '消息</span>' +
-        '<span class="hx-chip">' + ICONS.share + '分享</span>' +
+        '<span class="hx-chip hx-share">' + ICONS.share + '分享</span>' +
         '<span class="hx-chip">' + ICONS.comment + '批注</span>' +
         '<div class="hx-avatar">虎</div>';
       R.acct.title = isLoggedIn() ? '已登录' : '未登录';
@@ -3413,11 +3506,69 @@
     toast(blankMode ? '已隐藏内容 · 再按 Esc Esc 恢复' : '已恢复内容');
   }
 
+  /**
+   * 关掉 Excel 模式后，整个界面（连同齿轮）都会消失，很容易让人以为脚本坏了。
+   * 所以在页面底部丢一条 6 秒的提示 —— 它挂在 document.body 上（不在 #hx-root 里），
+   * 所以原生页面显示时也看得见。
+   */
+  function showOffHint() {
+    try {
+      const old = document.getElementById('hx-off-hint');
+      if (old) old.remove();
+      if (!document.body) return;
+      const box = document.createElement('div');
+      box.id = 'hx-off-hint';
+      box.textContent = 'Excel 模式已关闭 · 按 Alt+E 重新打开';
+      box.setAttribute('style',
+        'position:fixed;left:50%;bottom:24px;transform:translateX(-50%);z-index:2147483647;' +
+        'padding:8px 16px;border-radius:8px;background:rgba(32,32,32,.92);color:#fff;' +
+        'font:13px/1.4 -apple-system,"PingFang SC","Microsoft YaHei",sans-serif;' +
+        'box-shadow:0 6px 20px rgba(0,0,0,.3);pointer-events:none;');
+      document.body.appendChild(box);
+      setTimeout(function () { if (box.parentNode) box.remove(); }, 6000);
+    } catch (e) { /* 忽略 */ }
+  }
+
+  /*
+   * 油猴菜单项。
+   *
+   * 「Excel 模式」的开关特意放在这里、而不是页面内的设置面板里：关掉之后整个界面
+   * （连右上角的齿轮）都会消失，如果这个开关在面板里，误点一下就会让人以为脚本坏了、
+   * 而且再也找不到地方点回来。放菜单里，任何时候都能从油猴图标那里切回去。
+   */
+  let menuIds = [];
+
+  function registerMenus() {
+    if (typeof GM_registerMenuCommand !== 'function') return;   // 管理器不支持就算了
+    const canUnregister = typeof GM_unregisterMenuCommand === 'function';
+    if (menuIds.length) {
+      if (!canUnregister) return;   // 注销不了就不重复注册，免得菜单里堆一长串
+      menuIds.forEach(function (id) { try { GM_unregisterMenuCommand(id); } catch (e) { /* 忽略 */ } });
+      menuIds = [];
+    }
+    try {
+      menuIds.push(GM_registerMenuCommand(
+        (CFG.enabled ? '✓ ' : '') + '开关 Excel 模式（现在：' + (CFG.enabled ? '开' : '关') + '）',
+        function () { toggle(); }   // toggle() 内部会刷新菜单标签
+      ));
+      menuIds.push(GM_registerMenuCommand('恢复默认设置并开启', function () {
+        Object.assign(CFG, DEFAULTS);
+        try { sessionStorage.removeItem('hx.blank'); } catch (e) { /* 忽略 */ }
+        blankMode = false;
+        saveCfg();
+        apply();
+        toast('已恢复默认设置并开启 Excel 模式');
+        registerMenus();
+      }));
+    } catch (e) { /* 忽略 */ }
+  }
+
   function toggle() {
     CFG.enabled = !CFG.enabled;
     saveCfg();
     apply();
     if (CFG.enabled) toast('已开启 Excel 模式（Alt+E 关闭，Esc Esc 藏内容）');
+    registerMenus();   // 菜单标签里的「现在：开/关」跟着更新
   }
 
   function apply() {
@@ -3429,6 +3580,7 @@
       if (document.body) { render(); setTitle(); setFavicon(); }
     } else {
       closeSettings();
+      showOffHint();
       // 关掉 Excel 模式后挂上 hx-peek：给浏览器级 CSS 一个「现在是原生模式」的信号
       document.documentElement.classList.remove('hx-on');
       document.documentElement.classList.add('hx-peek');
@@ -3690,6 +3842,7 @@
   hookHistory();
   bindKeys();
   installGuard();
+  registerMenus();
 
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', onReady);
