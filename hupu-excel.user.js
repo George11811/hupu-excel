@@ -2,7 +2,7 @@
 // @name         虎扑 Excel · 摸鱼模式
 // @namespace    https://bbs.hupu.com/
 // @version      1.1.0
-// @author       lnik
+// @author       link
 // @license      MIT
 // @description  把 bbs.hupu.com 伪装成 Excel 工作簿：读页面自带的 $$data / __NEXT_DATA__ 渲染成带行号列标的表格，支持点选单元格、公式栏、多工作表、翻页、发帖回帖；右上角 ⚙ 打开设置面板，Esc Esc 藏内容、Alt+反引号切回原页面。
 // @match        *://*.hupu.com/*
